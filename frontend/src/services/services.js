@@ -62,6 +62,17 @@ export const sellerService = {
   similar: (id) => api.get(`/sellers/${id}/similar`),
 };
 
+export const offerService = {
+  create: (data) => api.post('/offers', data),
+  list: (params) => api.get('/offers', { params }),
+  mine: () => api.get('/offers/mine'),
+  received: () => api.get('/offers/received'),
+  update: (id, data) => api.put(`/offers/${id}`, data),
+  accept: (id) => api.post(`/offers/${id}/accept`),
+  reject: (id) => api.post(`/offers/${id}/reject`),
+  counter: (id, data) => api.post(`/offers/${id}/counter`, data),
+};
+
 export const adminService = {
   stats: () => api.get('/admin/stats'),
   analytics: () => api.get('/admin/analytics'),

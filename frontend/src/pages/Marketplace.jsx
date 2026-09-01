@@ -6,6 +6,7 @@ import { productService, categoryService } from '../services/services';
 import ProductCard from '../components/product/ProductCard';
 import { SkeletonGrid } from '../components/ui/Skeleton';
 import EmptyState from '../components/ui/EmptyState';
+import ErrorState from '../components/ui/ErrorState';
 import PageTransition from '../components/layout/PageTransition';
 import { ScrollReveal, RevealOnScroll } from '../components/ui/ScrollReveal';
 import MagneticButton from '../components/ui/MagneticButton';
@@ -16,6 +17,7 @@ export default function Marketplace() {
   const [categories, setCategories] = useState([]);
   const [brands, setBrands] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
   const [showFilters, setShowFilters] = useState(false);
   const [filters, setFilters] = useState({
     q: searchParams.get('q') || '',
@@ -37,13 +39,17 @@ export default function Marketplace() {
 
   useEffect(() => {
     setLoading(true);
+    setLoadError(null);
     productService
       .list(filters)
       .then((r) => {
         setProducts(r.data.items);
         setPagination(r.data.pagination);
       })
-      .catch(() => {})
+      .catch((err) => {
+        const isNetwork = !err?.response;
+        setLoadError(isNetwork ? 'network' : 'error');
+      })
       .finally(() => setLoading(false));
   }, [filters]);
 
@@ -233,11 +239,34 @@ export default function Marketplace() {
             <AnimatePresence mode="wait">
               {loading ? (
                 <SkeletonGrid key="loading" count={8} />
+              ) : loadError === 'network' ? (
+                <ErrorState
+                  key="network"
+                  variant="network"
+                  title="Connection lost"
+                  description="We can't reach the marketplace right now. Check your internet and try again."
+                  onRetry={() => setFilters((f) => ({ ...f }))}
+                />
+              ) : loadError === 'error' ? (
+                <ErrorState
+                  key="error"
+                  title="Something went wrong"
+                  description="We couldn't load this page."
+                  onRetry={() => setFilters((f) => ({ ...f }))}
+                />
               ) : products.length === 0 ? (
                 <EmptyState
                   key="empty"
-                  title="No products found"
-                  description="Try adjusting your filters or search query"
+                  title={
+                    filters.q
+                      ? `No results for "${filters.q}"`
+                      : 'No products found'
+                  }
+                  description={
+                    filters.q
+                      ? 'Try changing your search or removing some filters.'
+                      : 'Try adjusting your filters or search query'
+                  }
                   action={
                     <button onClick={clearFilters} className="btn-primary">
                       Clear filters

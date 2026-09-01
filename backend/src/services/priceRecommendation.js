@@ -73,6 +73,20 @@ const brandMultiplier = (brand) => {
 const clamp = (val, min, max) => Math.max(min, Math.min(max, val));
 
 /**
+ * Trim a sorted numeric array using the interquartile range (IQR) method.
+ * Returns [] if fewer than 4 values (not enough to compute quartiles reliably).
+ */
+const trimIQR = (sortedAsc) => {
+  if (!Array.isArray(sortedAsc) || sortedAsc.length < 4) return sortedAsc || [];
+  const q1 = sortedAsc[Math.floor(sortedAsc.length * 0.25)];
+  const q3 = sortedAsc[Math.floor(sortedAsc.length * 0.75)];
+  const iqr = q3 - q1;
+  const lo = q1 - 1.5 * iqr;
+  const hi = q3 + 1.5 * iqr;
+  return sortedAsc.filter((v) => v >= lo && v <= hi);
+};
+
+/**
  * Calculate recommended price.
  */
 const calculateRecommendedPrice = async ({
@@ -89,6 +103,7 @@ const calculateRecommendedPrice = async ({
 }) => {
   const factors = [];
   let confidence = 0.5;
+  let source = 'heuristic';
 
   const categoryName = typeof category === 'object' ? category?.name : category;
   const original = Number(originalPrice) || 0;
@@ -96,6 +111,13 @@ const calculateRecommendedPrice = async ({
   const specsArr = Array.isArray(specifications) ? specifications : [];
 
   let recommendedPrice = 0;
+
+  console.log(
+    `[PriceRec] inputs: category=${categoryName || '∅'} brand=${brand || '∅'} ` +
+      `original=${original} years=${years} condition=${condition} ` +
+      `cvScore=${cvConditionScore ?? '∅'} damageScore=${damageScore ?? '∅'} ` +
+      `comparables=${comparableListings.length}`
+  );
 
   if (original > 0) {
     // Depreciation-based estimate
@@ -120,16 +142,21 @@ const calculateRecommendedPrice = async ({
     recommendedPrice = depreciated;
     confidence += 0.2;
   } else if (comparableListings.length > 0) {
-    // No original price; use median of comparables
-    const prices = comparableListings
+    // No original price; use median of comparables (with IQR outlier removal)
+    const rawPrices = comparableListings
       .map((p) => Number(p.price) || 0)
       .filter((p) => p > 0)
       .sort((a, b) => a - b);
 
+    const trimmed = trimIQR(rawPrices);
+    const prices = trimmed.length >= 2 ? trimmed : rawPrices;
+    const outlierCount = rawPrices.length - prices.length;
+
     if (prices.length > 0) {
       const median = prices[Math.floor(prices.length / 2)];
       recommendedPrice = median * conditionMultiplier(condition);
-      factors.push(`Median of ${prices.length} comparable listings used as base`);
+      const outlierNote = outlierCount > 0 ? ` (${outlierCount} outlier(s) removed)` : '';
+      factors.push(`Median of ${prices.length} comparable listings${outlierNote} used as base`);
     }
     confidence += 0.1;
   }
@@ -166,11 +193,11 @@ const calculateRecommendedPrice = async ({
     const similarPrices = comparableListings
       .filter((p) => p.condition === condition)
       .map((p) => Number(p.price) || 0)
-      .filter((p) => p > 0);
+      .filter((p) => p > 0)
+      .sort((a, b) => a - b);
 
     if (similarPrices.length > 0) {
-      const medianComparable =
-        similarPrices.sort((a, b) => a - b)[Math.floor(similarPrices.length / 2)];
+      const medianComparable = similarPrices[Math.floor(similarPrices.length / 2)];
       // Weighted blend: 70% our calc, 30% market comparable
       const blended = recommendedPrice * 0.7 + medianComparable * 0.3;
       factors.push(`Blended with median of ${similarPrices.length} same-condition comparables`);
@@ -180,14 +207,19 @@ const calculateRecommendedPrice = async ({
   }
 
   if (recommendedPrice <= 0) {
+    console.warn(
+      `[PriceRec] insufficient data: original=${original} comparables=${comparableListings.length} ` +
+        `category=${categoryName || '∅'} brand=${brand || '∅'}`
+    );
     return {
       recommendedPrice: 0,
       minPrice: 0,
       maxPrice: 0,
       confidence: 0,
-      explanation: 'Insufficient data to recommend a price. Please provide more details.',
+      explanation:
+        'Insufficient data to recommend a price. Provide the original (MSRP) price, or wait for more comparable listings in this category.',
       factors: ['No original price and no comparable listings found'],
-      source: 'heuristic',
+      source: 'insufficient_data',
     };
   }
 
@@ -203,15 +235,21 @@ const calculateRecommendedPrice = async ({
     `adjusted by condition, brand, age, visual condition analysis, and ${comparableListings.length} ` +
     `comparable listings.`;
 
-  return {
+  const result = {
     recommendedPrice: Math.round(recommendedPrice * 100) / 100,
     minPrice: Math.round(minPrice * 100) / 100,
     maxPrice: Math.round(maxPrice * 100) / 100,
     confidence: Number(confidence.toFixed(2)),
     explanation,
     factors,
-    source: 'heuristic',
+    source,
   };
+
+  console.log(
+    `[PriceRec] result: recommended=${result.recommendedPrice} ` +
+      `range=${result.minPrice}..${result.maxPrice} confidence=${result.confidence}`
+  );
+  return result;
 };
 
 module.exports = { calculateRecommendedPrice };

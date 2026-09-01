@@ -12,7 +12,7 @@ const {
   getBrands,
   getSimilarProducts,
 } = require('../controllers/productController');
-const { protect, authorize, optionalAuth } = require('../middleware/auth');
+const { protect, optionalAuth } = require('../middleware/auth');
 const upload = require('../middleware/upload');
 const {
   createProductValidation,
@@ -29,11 +29,10 @@ router.get('/:id/similar', optionalAuth, getSimilarProducts);
 router.post(
   '/upload-images',
   protect,
-  authorize('seller', 'admin'),
   upload.array('images', 8),
   uploadImages
 );
-router.post('/', protect, authorize('seller', 'admin'), createProductValidation, createProduct);
+router.post('/', protect, createProductValidation, createProduct);
 router.put('/:id', protect, updateProductValidation, updateProduct);
 router.delete('/:id', protect, deleteProduct);
 router.patch('/:id/sold', protect, markAsSold);

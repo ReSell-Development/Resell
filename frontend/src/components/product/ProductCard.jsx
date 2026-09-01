@@ -113,7 +113,7 @@ export default function ProductCard({ product, index = 0 }) {
               >
                 <Heart
                   className={cn(
-                    'w-4.5 h-4.5 transition-all',
+                    'w-4 h-4 transition-all',
                     favorited ? 'fill-accent-500 text-accent-500' : 'text-slate-500'
                   )}
                 />

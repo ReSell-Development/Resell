@@ -38,7 +38,7 @@ const saleSchema = new mongoose.Schema(
 
 saleSchema.index({ seller: 1, createdAt: -1 });
 
-saleSchema.schema.statics = saleSchema.statics || {};
+saleSchema.statics = saleSchema.statics || {};
 saleSchema.statics.AddressSchema = addressSchema;
 
 module.exports = mongoose.model('Sale', saleSchema);

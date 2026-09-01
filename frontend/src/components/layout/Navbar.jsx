@@ -85,7 +85,7 @@ export default function Navbar() {
               transition={{ type: 'spring', stiffness: 300, damping: 20 }}
               className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-brand-600 via-violet-500 to-accent-500 shadow-lg shadow-brand-500/30"
             >
-              <Sparkles className="h-4.5 w-4.5 text-white" />
+              <Sparkles className="h-4 w-4 text-white" />
             </motion.div>
             <span className="font-display text-xl font-extrabold tracking-tight text-slate-900 md:text-2xl">
               Re<span className="gradient-text">Sell</span>

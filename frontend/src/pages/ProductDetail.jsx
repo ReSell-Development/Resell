@@ -13,9 +13,11 @@ import {
   ShieldCheck,
   ChevronRight,
   Send,
+  Tag,
+  Sparkles,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { productService, favoriteService, chatService, reportService } from '../services/services';
+import { productService, favoriteService, chatService, reportService, sellerService, offerService } from '../services/services';
 import { useAuth } from '../contexts/AuthContext';
 import { formatDate, getConditionLabel, getConditionColor, cn } from '../utils/format';
 import ImageGallery from '../components/product/ImageGallery';
@@ -41,6 +43,7 @@ export default function ProductDetail() {
   const [loading, setLoading] = useState(true);
   const [showReport, setShowReport] = useState(false);
   const [showAddressModal, setShowAddressModal] = useState(false);
+  const [showOfferModal, setShowOfferModal] = useState(false);
 
   useEffect(() => {
     setLoading(true);
@@ -135,6 +138,54 @@ export default function ProductDetail() {
       setShowReport(false);
     } catch (err) {
       toast.error(err.response?.data?.message || 'Failed to submit report');
+    }
+  };
+
+  const handleOffer = async ({ amount, message }) => {
+    if (!user) {
+      toast.error('Please log in to make an offer');
+      return;
+    }
+    if (product.seller._id === user._id) {
+      toast.error('You cannot make an offer on your own listing');
+      return;
+    }
+    if (!amount || Number(amount) <= 0) {
+      toast.error('Enter a valid offer amount');
+      return;
+    }
+    if (Number(amount) >= product.price) {
+      toast.error('Offer must be below the listed price');
+      return;
+    }
+    try {
+      await offerService.create({
+        productId: product._id,
+        amount: Number(amount),
+        message,
+      });
+      toast.success('Offer sent to seller');
+      setShowOfferModal(false);
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Failed to send offer');
+    }
+  };
+
+  const handleShare = async () => {
+    const url = window.location.href;
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: product.title, url });
+      } catch {
+        /* user cancelled */
+      }
+    } else {
+      try {
+        await navigator.clipboard.writeText(url);
+        toast.success('Link copied to clipboard');
+      } catch {
+        toast.error('Could not copy link');
+      }
     }
   };
 
@@ -293,10 +344,20 @@ export default function ProductDetail() {
                     {favorited ? 'Saved' : 'Save'}
                   </motion.button>
                   <motion.button
+                    onClick={handleShare}
+                    whileTap={{ scale: 0.95 }}
+                    className="btn-secondary"
+                    title="Share"
+                    aria-label="Share listing"
+                  >
+                    <Share2 className="w-4 h-4" />
+                  </motion.button>
+                  <motion.button
                     onClick={() => setShowReport(true)}
                     whileTap={{ scale: 0.95 }}
                     className="btn-secondary"
                     title="Report"
+                    aria-label="Report listing"
                   >
                     <Flag className="w-4 h-4" />
                   </motion.button>
@@ -315,7 +376,21 @@ export default function ProductDetail() {
                 />
               </ScrollReveal>
 
-              <ScrollReveal delay={0.25} direction="up">
+              {product.status !== 'sold' && (
+                <ScrollReveal delay={0.25} direction="up">
+                  <motion.button
+                    onClick={() => setShowOfferModal(true)}
+                    whileTap={{ scale: 0.97 }}
+                    whileHover={{ scale: 1.01 }}
+                    className="w-full btn-secondary py-3 text-base"
+                  >
+                    <Tag className="w-5 h-5" />
+                    Make an Offer
+                  </motion.button>
+                </ScrollReveal>
+              )}
+
+              <ScrollReveal delay={0.3} direction="up">
                 <MagneticButton
                   onClick={handleContactSeller}
                   className="w-full btn-primary py-3 text-base"
@@ -338,12 +413,14 @@ export default function ProductDetail() {
           </div>
         </div>
 
-        {showReport && (
-          <ReportModal
-            onClose={() => setShowReport(false)}
-            onSubmit={handleReport}
-          />
-        )}
+        <AnimatePresence>
+          {showReport && (
+            <ReportModal
+              onClose={() => setShowReport(false)}
+              onSubmit={handleReport}
+            />
+          )}
+        </AnimatePresence>
 
         <AnimatePresence>
           {showAddressModal && (
@@ -352,6 +429,16 @@ export default function ProductDetail() {
               initialValues={user ? { fullName: user.name || '' } : null}
               onConfirm={handleAddressConfirmed}
               onClose={() => setShowAddressModal(false)}
+            />
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {showOfferModal && (
+            <OfferModal
+              product={product}
+              onClose={() => setShowOfferModal(false)}
+              onSubmit={handleOffer}
             />
           )}
         </AnimatePresence>
@@ -432,6 +519,113 @@ function ReportModal({ onClose, onSubmit }) {
           <div className="flex gap-2 pt-2">
             <button type="button" onClick={onClose} className="btn-secondary flex-1">Cancel</button>
             <button type="submit" className="btn-danger flex-1">Submit Report</button>
+          </div>
+        </form>
+      </motion.div>
+    </div>
+  );
+}
+
+function OfferModal({ product, onClose, onSubmit }) {
+  const [amount, setAmount] = useState('');
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    setError('');
+    const value = Number(amount);
+    if (!amount || Number.isNaN(value) || value <= 0) {
+      setError('Enter a valid offer amount');
+      return;
+    }
+    if (value >= product.price) {
+      setError('Offer must be below the listed price');
+      return;
+    }
+    onSubmit({ amount: value, message });
+  };
+
+  const formatPrice = (n) =>
+    new Intl.NumberFormat('en-US', { style: 'currency', currency: product.currencyCode || 'USD', maximumFractionDigits: 0 }).format(n);
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 grid place-items-center p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="offer-modal-title"
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.9, y: 20 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.9, y: 20 }}
+        className="card p-6 w-full max-w-md"
+      >
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-brand-600 to-accent-500 grid place-items-center">
+            <Sparkles className="w-5 h-5 text-white" />
+          </div>
+          <h3 id="offer-modal-title" className="font-display font-bold text-xl">Make an Offer</h3>
+        </div>
+
+        <div className="mb-5 p-4 rounded-xl bg-slate-50 border border-slate-200">
+          <p className="text-xs text-slate-500 mb-1">Listed price</p>
+          <p className="font-display font-bold text-2xl gradient-text">
+            {formatPrice(product.price)}
+          </p>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label htmlFor="offer-amount" className="block text-sm font-medium mb-1">
+              Your offer
+            </label>
+            <div className="relative">
+              <Tag className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+              <input
+                id="offer-amount"
+                type="number"
+                min="1"
+                step="1"
+                max={product.price - 1}
+                value={amount}
+                onChange={(e) => { setAmount(e.target.value); setError(''); }}
+                placeholder="0"
+                className="input pl-10"
+                autoFocus
+                required
+              />
+            </div>
+          </div>
+
+          <div>
+            <label htmlFor="offer-message" className="block text-sm font-medium mb-1">
+              Message <span className="text-slate-400 font-normal">(optional)</span>
+            </label>
+            <textarea
+              id="offer-message"
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              rows={3}
+              maxLength={500}
+              className="input"
+              placeholder="Hi! Would you accept..."
+            />
+          </div>
+
+          {error && (
+            <p className="text-sm text-red-600" role="alert">{error}</p>
+          )}
+
+          <div className="flex gap-2 pt-2">
+            <button type="button" onClick={onClose} className="btn-secondary flex-1">
+              Cancel
+            </button>
+            <button type="submit" className="btn-primary flex-1">
+              <Send className="w-4 h-4" />
+              Submit Offer
+            </button>
           </div>
         </form>
       </motion.div>
