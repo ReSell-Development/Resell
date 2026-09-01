@@ -1,0 +1,176 @@
+const { Worker } = require('bullmq');
+const { connection } = require('../queues');
+const Product = require('../models/Product');
+const Category = require('../models/Category');
+const { uploadToCloudinary } = require('../config/cloudinary');
+const { perceptualHashFromBuffer } = require('../services/imageHash');
+const computerVision = require('../services/computerVision');
+const { calculateRecommendedPrice } = require('../services/priceRecommendation');
+const { detectRisk } = require('../services/fraudDetection');
+const { fetch } = require('undici');
+
+const imageProcessingWorker = new Worker(
+  'image-processing',
+  async (job) => {
+    const { productId, images, productData } = job.data;
+
+    try {
+      console.log(`[Worker] Processing images for product ${productId}`);
+
+      const results = [];
+      for (const image of images) {
+        let buffer;
+        if (image.buffer) {
+          buffer = Buffer.from(image.buffer);
+        } else if (image.url) {
+          const res = await fetch(image.url);
+          if (!res.ok) throw new Error(`Failed to fetch image: ${res.status}`);
+          buffer = Buffer.from(await res.arrayBuffer());
+        } else {
+          throw new Error('No image buffer or URL provided');
+        }
+
+        const uploaded = await uploadToCloudinary(buffer, 'resell/products');
+        const hash = await perceptualHashFromBuffer(buffer);
+
+        const [condition, damage, classification] = await Promise.all([
+          computerVision.assessCondition(buffer),
+          computerVision.detectDamage(buffer),
+          computerVision.classifyProduct(buffer, {
+            filename: image.originalname || 'image.jpg',
+            title: productData.title,
+          }),
+        ]);
+
+        results.push({
+          url: uploaded.url,
+          publicId: uploaded.publicId,
+          width: uploaded.width,
+          height: uploaded.height,
+          hash,
+          analysis: {
+            conditionScore: condition.score,
+            damageScore: damage.score,
+            predictedCategory: classification.category,
+            classificationConfidence: classification.confidence,
+          },
+        });
+      }
+
+      if (results.length === 0) {
+        throw new Error('No images processed successfully');
+      }
+
+      const avgCondition =
+        results.reduce((s, r) => s + (r.analysis?.conditionScore || 0), 0) / results.length;
+      const avgDamage =
+        results.reduce((s, r) => s + (r.analysis?.damageScore || 0), 0) / results.length;
+      const predictedCategory = results[0]?.analysis?.predictedCategory || 'Other';
+
+      const category = await Category.findById(productData.category);
+      const comparables = await Product.find({
+        category: productData.category,
+        status: 'sold',
+      })
+        .sort({ createdAt: -1 })
+        .limit(20)
+        .select('price condition brand model');
+
+      const priceRec = await calculateRecommendedPrice({
+        category,
+        brand: productData.brand,
+        model: productData.model,
+        originalPrice: productData.originalPrice,
+        yearsUsed: productData.yearsUsed,
+        condition: productData.condition,
+        cvConditionScore: Math.round(avgCondition),
+        damageScore: Math.round(avgDamage),
+        specifications: productData.specifications,
+        comparableListings: comparables,
+      });
+
+      const product = await Product.findByIdAndUpdate(
+        productId,
+        {
+          images: results.map((r, idx) => ({
+            url: r.url,
+            publicId: r.publicId,
+            isPrimary: idx === 0,
+          })),
+          aiAnalysis: {
+            classification: {
+              predictedCategory,
+              confidence: results[0]?.analysis?.classificationConfidence || 0,
+            },
+            conditionScore: Math.round(avgCondition),
+            damageScore: Math.round(avgDamage),
+            damageDescription: '',
+            imageHashes: results.map((r) => r.hash).filter(Boolean),
+            priceRecommendation: {
+              recommendedPrice: priceRec.recommendedPrice,
+              minPrice: priceRec.minPrice,
+              maxPrice: priceRec.maxPrice,
+              confidence: priceRec.confidence,
+              explanation: priceRec.explanation,
+              factors: priceRec.factors,
+              source: priceRec.source,
+            },
+            lastAnalyzedAt: new Date(),
+          },
+        },
+        { new: true }
+      );
+
+      if (!product) {
+        throw new Error('Product not found');
+      }
+
+      const risk = await detectRisk({
+        product,
+        hashes: product.aiAnalysis.imageHashes,
+        aiAnalysis: product.aiAnalysis,
+      });
+
+      product.aiAnalysis.riskAssessment = {
+        riskScore: risk.riskScore,
+        riskLevel: risk.riskLevel,
+        factors: risk.factors,
+        assessedAt: new Date(),
+      };
+
+      await product.save();
+
+      console.log(`[Worker] Completed processing for product ${productId}`);
+      return { success: true, productId };
+    } catch (error) {
+      console.error(`[Worker] Error processing product ${productId}:`, error);
+      throw error;
+    }
+  },
+  {
+    connection,
+    concurrency: 2,
+  }
+);
+
+imageProcessingWorker.on('completed', (job) => {
+  console.log(`[Worker] Job ${job.id} completed`);
+});
+
+imageProcessingWorker.on('failed', (job, err) => {
+  console.error(`[Worker] Job ${job?.id} failed:`, err.message);
+});
+
+console.log('[Worker] Image processing worker started');
+
+process.on('SIGINT', async () => {
+  console.log('[Worker] Shutting down...');
+  await imageProcessingWorker.close();
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  console.log('[Worker] Shutting down...');
+  await imageProcessingWorker.close();
+  process.exit(0);
+});

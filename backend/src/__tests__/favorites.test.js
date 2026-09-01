@@ -1,0 +1,178 @@
+const request = require('supertest');
+const mongoose = require('mongoose');
+const { app, server } = require('../server');
+const User = require('../models/User');
+const Category = require('../models/Category');
+const Product = require('../models/Product');
+const Favorite = require('../models/Favorite');
+
+describe('Favorites Routes', () => {
+  let userToken;
+  let productId;
+
+  afterAll(async () => {
+    await server.close();
+  });
+
+  afterEach(async () => {
+    const collections = mongoose.connection.collections;
+    for (const key in collections) {
+      await collections[key].deleteMany({});
+    }
+  });
+
+  const setupFavTest = async () => {
+    const user = await User.create({
+      name: 'Fav User',
+      email: 'fav@example.com',
+      password: 'password123',
+      role: 'buyer',
+    });
+
+    const category = await Category.create({
+      name: 'Fav Category',
+      slug: 'fav-category',
+      icon: 'package',
+    });
+
+    const product = await Product.create({
+      title: 'Favorite Product',
+      description: 'Description',
+      price: 100,
+      category: category._id,
+      images: [{ url: 'https://example.com/img.jpg', publicId: 'img123' }],
+      seller: user._id,
+    });
+    productId = product._id.toString();
+
+    const res = await request(app)
+      .post('/api/auth/login')
+      .send({ email: 'fav@example.com', password: 'password123' });
+    userToken = res.body.token;
+  };
+
+  beforeEach(async () => {
+    await setupFavTest();
+  });
+
+  beforeAll(async () => {
+    const user = await User.create({
+      name: 'Fav User',
+      email: 'fav@example.com',
+      password: 'password123',
+      role: 'buyer',
+    });
+
+    const category = await Category.create({
+      name: 'Fav Category',
+      slug: 'fav-category',
+      icon: 'package',
+    });
+
+    const product = await Product.create({
+      title: 'Favorite Product',
+      description: 'Description',
+      price: 100,
+      category: category._id,
+      images: [{ url: 'https://example.com/img.jpg', publicId: 'img123' }],
+      seller: user._id,
+    });
+    productId = product._id.toString();
+
+    const res = await request(app)
+      .post('/api/auth/login')
+      .send({ email: 'fav@example.com', password: 'password123' });
+    userToken = res.body.token;
+  });
+
+  afterAll(async () => {
+    await server.close();
+  });
+
+  describe('POST /api/favorites/:productId', () => {
+    it('should add product to favorites', async () => {
+      const res = await request(app)
+        .post(`/api/favorites/${productId}`)
+        .set('Authorization', `Bearer ${userToken}`)
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+    });
+
+    it('should reject duplicate favorite', async () => {
+      // Add once
+      await request(app)
+        .post(`/api/favorites/${productId}`)
+        .set('Authorization', `Bearer ${userToken}`);
+
+      // Try to add again
+      const res = await request(app)
+        .post(`/api/favorites/${productId}`)
+        .set('Authorization', `Bearer ${userToken}`)
+        .expect(400);
+
+      expect(res.body.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('should require auth', async () => {
+      const res = await request(app)
+        .post(`/api/favorites/${productId}`)
+        .expect(401);
+
+      expect(res.body.code).toBe('UNAUTHORIZED');
+    });
+
+    it('should validate product ID', async () => {
+      const res = await request(app)
+        .post('/api/favorites/invalid-id')
+        .set('Authorization', `Bearer ${userToken}`)
+        .expect(400);
+
+      expect(res.body.code).toBe('VALIDATION_ERROR');
+    });
+  });
+
+  describe('GET /api/favorites', () => {
+    it('should return user favorites', async () => {
+      const res = await request(app)
+        .get('/api/favorites')
+        .set('Authorization', `Bearer ${userToken}`)
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(res.body.items).toBeDefined();
+    });
+  });
+
+  describe('GET /api/favorites/:productId/check', () => {
+    it('should check if product is favorited', async () => {
+      const res = await request(app)
+        .get(`/api/favorites/${productId}/check`)
+        .set('Authorization', `Bearer ${userToken}`)
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(res.body.favorited).toBe(true);
+    });
+  });
+
+  describe('DELETE /api/favorites/:productId', () => {
+    it('should remove product from favorites', async () => {
+      const res = await request(app)
+        .delete(`/api/favorites/${productId}`)
+        .set('Authorization', `Bearer ${userToken}`)
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+    });
+
+    it('should return 404 for non-favorited product', async () => {
+      const res = await request(app)
+        .delete(`/api/favorites/${productId}`)
+        .set('Authorization', `Bearer ${userToken}`)
+        .expect(404);
+
+      expect(res.body.code).toBe('NOT_FOUND');
+    });
+  });
+});

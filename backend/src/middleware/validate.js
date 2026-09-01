@@ -1,0 +1,203 @@
+const { body, param, query, validationResult } = require('express-validator');
+const AppError = require('../utils/AppError');
+
+const handleValidation = (req, res, next) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    const messages = errors.array().map((e) => `${e.path}: ${e.msg}`).join('; ');
+    return next(new AppError(messages, 400, 'VALIDATION_ERROR'));
+  }
+  next();
+};
+
+const registerValidation = [
+  body('name').trim().notEmpty().withMessage('Name is required').isLength({ max: 60 }).withMessage('Name too long'),
+  body('email').isEmail().withMessage('Valid email is required').normalizeEmail(),
+  body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
+  body('role').optional().isIn(['buyer', 'seller']).withMessage('Invalid role'),
+  body('location').optional().isString().trim(),
+  handleValidation,
+];
+
+const loginValidation = [
+  body('email').isEmail().withMessage('Valid email is required').normalizeEmail(),
+  body('password').notEmpty().withMessage('Password is required'),
+  handleValidation,
+];
+
+const updateProfileValidation = [
+  body('name').optional().trim().notEmpty().withMessage('Name cannot be empty').isLength({ max: 60 }).withMessage('Name too long'),
+  body('bio').optional().isString().isLength({ max: 500 }).withMessage('Bio too long'),
+  body('phone').optional().isString(),
+  body('location').optional().isString(),
+  body('avatar').optional().isObject(),
+  handleValidation,
+];
+
+const changePasswordValidation = [
+  body('currentPassword').notEmpty().withMessage('Current password is required'),
+  body('newPassword').isLength({ min: 6 }).withMessage('New password must be at least 6 characters'),
+  handleValidation,
+];
+
+const createProductValidation = [
+  body('title').trim().notEmpty().withMessage('Title is required').isLength({ max: 120 }).withMessage('Title too long'),
+  body('description').trim().notEmpty().withMessage('Description is required').isLength({ max: 4000 }).withMessage('Description too long'),
+  body('price').isFloat({ min: 0 }).withMessage('Price must be a positive number'),
+  body('originalPrice').optional().isFloat({ min: 0 }).withMessage('Original price must be a positive number'),
+  body('currencyCode').optional().isString().isLength({ min: 3, max: 3 }).withMessage('currencyCode must be a 3-letter code'),
+  body('category').notEmpty().withMessage('Category is required').isMongoId().withMessage('Invalid category ID'),
+  body('brand').optional().isString().trim().isLength({ max: 100 }),
+  body('model').optional().isString().trim().isLength({ max: 100 }),
+  body('condition').optional().isIn(['new', 'like-new', 'good', 'fair', 'poor']).withMessage('Invalid condition'),
+  body('yearsUsed').optional().isInt({ min: 0 }).withMessage('Years used must be a positive integer'),
+  body('specifications').optional().isArray().withMessage('Specifications must be an array'),
+  body('specifications.*.key').optional().isString().trim(),
+  body('specifications.*.value').optional().isString().trim(),
+  body('location').optional().isObject(),
+  body('location.city').optional().isString(),
+  body('location.state').optional().isString(),
+  body('location.country').optional().isString(),
+  body('images').isArray({ min: 1 }).withMessage('At least one image is required'),
+  body('images.*.url').notEmpty().withMessage('Image URL is required').isURL().withMessage('Invalid image URL'),
+  body('images.*.publicId').notEmpty().withMessage('Image publicId is required'),
+  body('images.*.hash').optional().isString(),
+  handleValidation,
+];
+
+const updateProductValidation = [
+  param('id').isMongoId().withMessage('Invalid product ID'),
+  body('title').optional().trim().notEmpty().withMessage('Title cannot be empty').isLength({ max: 120 }).withMessage('Title too long'),
+  body('description').optional().trim().notEmpty().withMessage('Description cannot be empty').isLength({ max: 4000 }).withMessage('Description too long'),
+  body('price').optional().isFloat({ min: 0 }).withMessage('Price must be a positive number'),
+  body('originalPrice').optional().isFloat({ min: 0 }).withMessage('Original price must be a positive number'),
+  body('category').optional().isMongoId().withMessage('Invalid category ID'),
+  body('brand').optional().isString().trim().isLength({ max: 100 }),
+  body('model').optional().isString().trim().isLength({ max: 100 }),
+  body('condition').optional().isIn(['new', 'like-new', 'good', 'fair', 'poor']).withMessage('Invalid condition'),
+  body('yearsUsed').optional().isInt({ min: 0 }).withMessage('Years used must be a positive integer'),
+  body('specifications').optional().isArray().withMessage('Specifications must be an array'),
+  body('images').optional().isArray().withMessage('Images must be an array'),
+  handleValidation,
+];
+
+const createCategoryValidation = [
+  body('name').trim().notEmpty().withMessage('Name is required').isLength({ max: 100 }).withMessage('Name too long'),
+  body('description').optional().isString().trim(),
+  body('icon').optional().isString(),
+  body('image').optional().isString(),
+  body('parent').optional().isMongoId().withMessage('Invalid parent category ID'),
+  handleValidation,
+];
+
+const updateCategoryValidation = [
+  param('id').isMongoId().withMessage('Invalid category ID'),
+  body('name').optional().trim().notEmpty().withMessage('Name cannot be empty').isLength({ max: 100 }).withMessage('Name too long'),
+  body('description').optional().isString().trim(),
+  body('icon').optional().isString(),
+  body('image').optional().isString(),
+  body('parent').optional().isMongoId().withMessage('Invalid parent category ID'),
+  body('isActive').optional().isBoolean().withMessage('isActive must be boolean'),
+  handleValidation,
+];
+
+const createConversationValidation = [
+  body('recipientId').notEmpty().withMessage('Recipient is required').isMongoId().withMessage('Invalid recipient ID'),
+  body('productId').optional().isMongoId().withMessage('Invalid product ID'),
+  handleValidation,
+];
+
+const sendMessageValidation = [
+  body('conversationId').notEmpty().withMessage('Conversation is required').isMongoId().withMessage('Invalid conversation ID'),
+  body('content').trim().notEmpty().withMessage('Message content is required').isLength({ max: 2000 }).withMessage('Message too long'),
+  handleValidation,
+];
+
+const getMessagesValidation = [
+  param('id').isMongoId().withMessage('Invalid conversation ID'),
+  query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
+  query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be between 1 and 100'),
+  handleValidation,
+];
+
+const createReportValidation = [
+  body('targetType').notEmpty().withMessage('Target type is required').isIn(['product', 'user']).withMessage('Invalid target type'),
+  body('target').notEmpty().withMessage('Target is required').isMongoId().withMessage('Invalid target ID'),
+  body('reason').notEmpty().withMessage('Reason is required').isIn(['spam', 'fake', 'fraud', 'inappropriate', 'duplicate', 'other']).withMessage('Invalid reason'),
+  body('description').optional().isString().trim().isLength({ max: 1000 }).withMessage('Description too long'),
+  handleValidation,
+];
+
+const updateReportValidation = [
+  param('id').isMongoId().withMessage('Invalid report ID'),
+  body('status').optional().isIn(['pending', 'reviewing', 'resolved', 'dismissed']).withMessage('Invalid status'),
+  body('action').optional().isString().trim().isLength({ max: 500 }).withMessage('Action too long'),
+  handleValidation,
+];
+
+const updateUserValidation = [
+  param('id').isMongoId().withMessage('Invalid user ID'),
+  body('role').optional().isIn(['buyer', 'seller', 'admin']).withMessage('Invalid role'),
+  body('isActive').optional().isBoolean().withMessage('isActive must be boolean'),
+  body('isVerified').optional().isBoolean().withMessage('isVerified must be boolean'),
+  body('complaints').optional().isInt({ min: 0 }).withMessage('Complaints must be a positive integer'),
+  body('suspendedUntil').optional().isISO8601().withMessage('Invalid date format'),
+  handleValidation,
+];
+
+const moderateProductValidation = [
+  param('id').isMongoId().withMessage('Invalid product ID'),
+  body('status').optional().isIn(['active', 'sold', 'pending', 'rejected', 'removed']).withMessage('Invalid status'),
+  body('isFlagged').optional().isBoolean().withMessage('isFlagged must be boolean'),
+  body('flagReason').optional().isString().trim().isLength({ max: 500 }).withMessage('Flag reason too long'),
+  handleValidation,
+];
+
+const addReviewValidation = [
+  param('id').isMongoId().withMessage('Invalid seller ID'),
+  body('rating').isInt({ min: 1, max: 5 }).withMessage('Rating must be between 1 and 5'),
+  body('comment').optional().isString().trim().isLength({ max: 1000 }).withMessage('Comment too long'),
+  body('product').optional().isMongoId().withMessage('Invalid product ID'),
+  handleValidation,
+];
+
+const favoriteValidation = [
+  param('productId').isMongoId().withMessage('Invalid product ID'),
+  handleValidation,
+];
+
+const productQueryValidation = [
+  query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
+  query('limit').optional().isInt({ min: 1, max: 50 }).withMessage('Limit must be between 1 and 50'),
+  query('sort').optional().isIn(['price-asc', 'price-desc', 'newest', 'oldest', 'popular']).withMessage('Invalid sort option'),
+  query('q').optional().isString().trim(),
+  query('category').optional().isMongoId().withMessage('Invalid category ID'),
+  query('brand').optional().isString().trim(),
+  query('condition').optional().isIn(['new', 'like-new', 'good', 'fair', 'poor']).withMessage('Invalid condition'),
+  query('minPrice').optional().isFloat({ min: 0 }).withMessage('Min price must be positive'),
+  query('maxPrice').optional().isFloat({ min: 0 }).withMessage('Max price must be positive'),
+  query('location').optional().isString().trim(),
+  handleValidation,
+];
+
+module.exports = {
+  handleValidation,
+  registerValidation,
+  loginValidation,
+  updateProfileValidation,
+  changePasswordValidation,
+  createProductValidation,
+  updateProductValidation,
+  createCategoryValidation,
+  updateCategoryValidation,
+  createConversationValidation,
+  sendMessageValidation,
+  getMessagesValidation,
+  createReportValidation,
+  updateReportValidation,
+  updateUserValidation,
+  moderateProductValidation,
+  addReviewValidation,
+  productQueryValidation,
+  favoriteValidation,
+};

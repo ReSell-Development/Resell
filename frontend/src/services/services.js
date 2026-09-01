@@ -1,0 +1,73 @@
+import api from './api';
+
+export const authService = {
+  register: (data) => api.post('/auth/register', data),
+  login: (data) => api.post('/auth/login', data),
+  logout: () => api.post('/auth/logout'),
+  me: () => api.get('/auth/me'),
+  updateProfile: (data) => api.put('/auth/profile', data),
+  changePassword: (data) => api.put('/auth/password', data),
+};
+
+export const productService = {
+  list: (params) => api.get('/products', { params }),
+  get: (id) => api.get(`/products/${id}`),
+  my: () => api.get('/products/mine'),
+  brands: () => api.get('/products/brands'),
+  similar: (id) => api.get(`/products/${id}/similar`),
+  uploadImages: (formData) =>
+    api.post('/products/upload-images', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    }),
+  create: (data) => api.post('/products', data),
+  update: (id, data) => api.put(`/products/${id}`, data),
+  delete: (id) => api.delete(`/products/${id}`),
+  markSold: (id) => api.patch(`/products/${id}/sold`),
+};
+
+export const categoryService = {
+  list: () => api.get('/categories'),
+  get: (slug) => api.get(`/categories/${slug}`),
+  stats: () => api.get('/categories/stats'),
+  create: (data) => api.post('/categories', data),
+  update: (id, data) => api.put(`/categories/${id}`, data),
+  remove: (id) => api.delete(`/categories/${id}`),
+};
+
+export const favoriteService = {
+  list: () => api.get('/favorites'),
+  check: (id) => api.get(`/favorites/${id}/check`),
+  add: (id) => api.post(`/favorites/${id}`),
+  remove: (id) => api.delete(`/favorites/${id}`),
+};
+
+export const chatService = {
+  conversations: () => api.get('/chat/conversations'),
+  createConversation: (data) => api.post('/chat/conversations', data),
+  messages: (id, params) => api.get(`/chat/conversations/${id}/messages`, { params }),
+  send: (data) => api.post('/chat/messages', data),
+  markRead: (id) => api.post(`/chat/conversations/${id}/read`),
+};
+
+export const reportService = {
+  create: (data) => api.post('/reports', data),
+  list: (params) => api.get('/reports', { params }),
+  update: (id, data) => api.put(`/reports/${id}`, data),
+};
+
+export const sellerService = {
+  profile: (id) => api.get(`/sellers/${id}`),
+  trust: (id) => api.get(`/sellers/${id}/trust`),
+  review: (id, data) => api.post(`/sellers/${id}/reviews`, data),
+  similar: (id) => api.get(`/sellers/${id}/similar`),
+};
+
+export const adminService = {
+  stats: () => api.get('/admin/stats'),
+  analytics: () => api.get('/admin/analytics'),
+  users: (params) => api.get('/admin/users', { params }),
+  updateUser: (id, data) => api.put(`/admin/users/${id}`, data),
+  deleteUser: (id) => api.delete(`/admin/users/${id}`),
+  products: (params) => api.get('/admin/products', { params }),
+  moderateProduct: (id, data) => api.put(`/admin/products/${id}`, data),
+};
