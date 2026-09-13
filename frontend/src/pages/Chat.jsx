@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -7,8 +7,12 @@ import {
   Search,
   Package,
   Loader2,
-  ChevronDown,
+  Check,
+  CheckCheck,
+  Image as ImageIcon,
+  Phone,
 } from 'lucide-react';
+import CallModal from '../components/CallModal';
 import toast from 'react-hot-toast';
 import { chatService } from '../services/services';
 import { useSocket } from '../contexts/SocketContext';
@@ -23,7 +27,18 @@ export default function Chat() {
   const { id } = useParams();
   const navigate = useNavigate();
   const { user } = useAuth();
-  const { socket, on, off, joinConversation, leaveConversation, emitTyping, emitStopTyping } = useSocket();
+  const {
+    socket,
+    on,
+    off,
+    joinConversation,
+    leaveConversation,
+    emitTyping,
+    emitStopTyping,
+    onlineUsers,
+    setUnread,
+    clearUnread,
+  } = useSocket();
 
   const [conversations, setConversations] = useState([]);
   const [activeConv, setActiveConv] = useState(null);
@@ -35,46 +50,115 @@ export default function Chat() {
   const [search, setSearch] = useState('');
   const messagesEndRef = useRef(null);
   const typingTimeoutRef = useRef(null);
+  const callModalRef = useRef(null);
 
+  // Load conversations
   useEffect(() => {
-    chatService.conversations().then((r) => {
-      setConversations(r.data.conversations);
-      if (id) {
-        const conv = r.data.conversations.find((c) => c._id === id);
-        if (conv) setActiveConv(conv);
-      }
-      setLoading(false);
-    });
+    chatService
+      .conversations()
+      .then((r) => {
+        const convs = r.data.conversations;
+        setConversations(convs);
+        // Sync unread counts to socket context
+        convs.forEach((c) => {
+          const count = c.unreadCounts?.[user._id] || 0;
+          setUnread(c._id, count);
+        });
+        if (id) {
+          const conv = convs.find((c) => c._id === id);
+          if (conv) setActiveConv(conv);
+        }
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
   }, [id]);
 
+  // Load messages when active conversation changes
   useEffect(() => {
     if (!activeConv) return;
     joinConversation(activeConv._id);
     chatService
       .messages(activeConv._id)
-      .then((r) => setMessages(r.data.messages))
+      .then((r) => {
+        setMessages(r.data.messages);
+        // Mark as read
+        chatService.markRead(activeConv._id).catch(() => {});
+        clearUnread(activeConv._id);
+        // Also emit via socket
+        emit('chat:read', { conversationId: activeConv._id });
+      })
       .catch(() => toast.error('Failed to load messages'));
 
     return () => leaveConversation(activeConv._id);
   }, [activeConv?._id]);
 
+  // Handle new messages from socket
   useEffect(() => {
     const handleNew = (msg) => {
       if (activeConv && msg.conversation === activeConv._id) {
-        setMessages((prev) => [...prev, msg]);
+        setMessages((prev) => {
+          if (prev.some((m) => m._id === msg._id)) return prev;
+          return [...prev, msg];
+        });
+        // Auto-mark as read if viewing the conversation
+        chatService.markRead(activeConv._id).catch(() => {});
+        clearUnread(activeConv._id);
+      } else {
+        setConversations((prev) => {
+          const existing = prev.find((c) => c._id === msg.conversation);
+          if (existing) {
+            return prev.map((c) =>
+              c._id === msg.conversation
+                ? { ...c, lastMessage: msg, lastMessageAt: msg.createdAt }
+                : c
+            ).sort((a, b) => new Date(b.lastMessageAt) - new Date(a.lastMessageAt));
+          }
+          return prev;
+        });
       }
-      setConversations((prev) =>
-        prev.map((c) =>
-          c._id === msg.conversation
-            ? { ...c, lastMessage: msg, lastMessageAt: msg.createdAt }
-            : c
-        ).sort((a, b) => new Date(b.lastMessageAt) - new Date(a.lastMessageAt))
-      );
     };
+    on('chat:message', handleNew);
     on('message:new', handleNew);
-    return () => off('message:new');
-  }, [activeConv, on, off]);
+    return () => {
+      off('chat:message');
+      off('message:new');
+    };
+  }, [activeConv, on, off, clearUnread]);
 
+  // Handle conversation list updates
+  useEffect(() => {
+    const handleConvUpdate = () => {
+      chatService.conversations().then((r) => {
+        setConversations(r.data.conversations);
+      });
+    };
+    on('conversation:update', handleConvUpdate);
+    return () => off('conversation:update');
+  }, [on, off]);
+
+  // Handle read receipts
+  useEffect(() => {
+    const handleRead = ({ conversationId, readerId }) => {
+      if (activeConv && conversationId === activeConv._id && readerId !== user._id) {
+        setMessages((prev) =>
+          prev.map((msg) => {
+            if (msg.sender._id === user._id && !msg.readBy?.some((r) => r.user === readerId)) {
+              return {
+                ...msg,
+                readBy: [...(msg.readBy || []), { user: readerId, readAt: new Date() }],
+                status: 'read',
+              };
+            }
+            return msg;
+          })
+        );
+      }
+    };
+    on('conversation:read', handleRead);
+    return () => off('conversation:read');
+  }, [activeConv, user._id, on, off]);
+
+  // Typing indicators
   useEffect(() => {
     const handleTyping = ({ userId: typingUserId }) => {
       if (activeConv && typingUserId !== user._id) setTyping(true);
@@ -90,6 +174,7 @@ export default function Chat() {
     };
   }, [activeConv, user._id, on, off]);
 
+  // Auto-scroll to latest message
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
@@ -97,14 +182,17 @@ export default function Chat() {
   const handleSend = async (e) => {
     e.preventDefault();
     if (!input.trim() || !activeConv) return;
+    const text = input.trim();
+    setInput('');
     setSending(true);
     try {
-      const { data } = await chatService.send({
+      // Emit via socket — the server persists the message and broadcasts
+      // chat:message to all participants (including sender), which the
+      // socket listener at line 96 adds to the messages array.
+      emit('chat:send', {
         conversationId: activeConv._id,
-        content: input.trim(),
+        text,
       });
-      setMessages((prev) => [...prev, data.message]);
-      setInput('');
       emitStopTyping({
         conversationId: activeConv._id,
         recipientId: activeConv.participants.find((p) => p._id !== user._id)?._id,
@@ -142,20 +230,25 @@ export default function Chat() {
   const getOtherParticipant = (conv) =>
     conv.participants.find((p) => p._id !== user._id) || {};
 
+  const getUnreadCount = (conv) => conv.unreadCounts?.[user._id] || 0;
+
+  const isOnline = (userId) => onlineUsers.has(userId);
+
   if (loading) return <Loader />;
 
   return (
     <PageTransition>
       <div className="relative min-h-screen">
-
         <div className="container-page py-4 relative z-10">
           <ScrollReveal direction="up">
             <div className="card overflow-hidden h-[calc(100vh-10rem)] flex">
               {/* Conversations list */}
-              <div className={cn(
-                'w-full md:w-80 border-r border-slate-200 flex flex-col',
-                activeConv && 'hidden md:flex'
-              )}>
+              <div
+                className={cn(
+                  'w-full md:w-80 border-r border-slate-200 flex flex-col',
+                  activeConv && 'hidden md:flex'
+                )}
+              >
                 <div className="p-4 border-b border-slate-200">
                   <div className="flex items-center justify-between mb-3">
                     <h2 className="font-display font-bold text-lg">Messages</h2>
@@ -192,6 +285,7 @@ export default function Chat() {
                   ) : (
                     filteredConversations.map((conv) => {
                       const other = getOtherParticipant(conv);
+                      const unread = getUnreadCount(conv);
                       return (
                         <motion.button
                           key={conv._id}
@@ -207,29 +301,51 @@ export default function Chat() {
                           )}
                           whileTap={{ scale: 0.99 }}
                         >
-                          {other.avatar?.url ? (
-                            <img src={other.avatar.url} alt="" className="w-10 h-10 rounded-full object-cover" />
-                          ) : (
-                            <div className="w-10 h-10 rounded-full bg-gradient-to-br from-brand-500 to-accent-500 grid place-items-center text-white font-semibold">
-                              {other.name?.[0]?.toUpperCase()}
-                            </div>
-                          )}
+                          <div className="relative flex-shrink-0">
+                            {other.avatar?.url ? (
+                              <img
+                                src={other.avatar.url}
+                                alt=""
+                                className="w-10 h-10 rounded-full object-cover"
+                              />
+                            ) : (
+                              <div className="w-10 h-10 rounded-full bg-gradient-to-br from-brand-500 to-accent-500 grid place-items-center text-white font-semibold">
+                                {other.name?.[0]?.toUpperCase()}
+                              </div>
+                            )}
+                            {isOnline(other._id) && (
+                              <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-emerald-500 rounded-full border-2 border-white" />
+                            )}
+                          </div>
                           <div className="flex-1 min-w-0">
                             <div className="flex justify-between items-start mb-1">
-                              <p className="font-medium text-sm truncate">{other.name}</p>
+                              <div className="flex items-center gap-2 min-w-0">
+                                <p className={cn('text-sm truncate', unread > 0 ? 'font-bold' : 'font-medium')}>
+                                  {other.name}
+                                </p>
+                                {conv.product && (
+                                  <span className="text-xs text-slate-400 hidden sm:inline">
+                                    · {conv.product.title?.slice(0, 15)}{conv.product.title?.length > 15 ? '...' : ''}
+                                  </span>
+                                )}
+                              </div>
                               <span className="text-xs text-slate-400 flex-shrink-0 ml-2">
                                 {formatDate(conv.lastMessageAt)}
                               </span>
                             </div>
-                            <p className="text-xs text-slate-500 truncate">
-                              {conv.lastMessage?.content || 'No messages yet'}
-                            </p>
-                            {conv.product && (
-                              <div className="flex items-center gap-1 mt-1 text-xs text-brand-600">
-                                <Package className="w-3 h-3" />
-                                {conv.product.title}
-                              </div>
-                            )}
+                            <div className="flex items-center justify-between gap-2">
+                              <p className={cn(
+                                'text-xs truncate',
+                                unread > 0 ? 'text-slate-700 font-medium' : 'text-slate-500'
+                              )}>
+                                {conv.lastMessage?.content || 'No messages yet'}
+                              </p>
+                              {unread > 0 && (
+                                <span className="flex-shrink-0 w-5 h-5 rounded-full bg-brand-500 text-white text-[10px] font-bold grid place-items-center">
+                                  {unread > 9 ? '9+' : unread}
+                                </span>
+                              )}
+                            </div>
                           </div>
                         </motion.button>
                       );
@@ -239,10 +355,12 @@ export default function Chat() {
               </div>
 
               {/* Messages panel */}
-              <div className={cn(
-                'flex-1 flex flex-col',
-                !activeConv && 'hidden md:flex'
-              )}>
+              <div
+                className={cn(
+                  'flex-1 flex flex-col',
+                  !activeConv && 'hidden md:flex'
+                )}
+              >
                 {activeConv ? (
                   <>
                     {/* Header */}
@@ -263,27 +381,58 @@ export default function Chat() {
                       </motion.button>
                       {(() => {
                         const other = getOtherParticipant(activeConv);
+                        const online = isOnline(other._id);
                         return (
                           <>
-                            {other.avatar?.url ? (
-                              <img src={other.avatar.url} alt="" className="w-10 h-10 rounded-full object-cover" />
-                            ) : (
-                              <div className="w-10 h-10 rounded-full bg-gradient-to-br from-brand-500 to-accent-500 grid place-items-center text-white font-semibold">
-                                {other.name?.[0]?.toUpperCase()}
-                              </div>
-                            )}
-                            <div className="flex-1">
-                              <p className="font-semibold">{other.name}</p>
-                              {activeConv.product && (
-                                <motion.button
-                                  onClick={() => navigate(`/product/${activeConv.product._id}`)}
-                                  className="text-xs text-brand-600 hover:underline"
-                                  whileHover={{ x: 4 }}
-                                >
-                                  About: {activeConv.product.title}
-                                </motion.button>
+                            <div className="relative flex-shrink-0">
+                              {other.avatar?.url ? (
+                                <img
+                                  src={other.avatar.url}
+                                  alt=""
+                                  className="w-10 h-10 rounded-full object-cover"
+                                />
+                              ) : (
+                                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-brand-500 to-accent-500 grid place-items-center text-white font-semibold">
+                                  {other.name?.[0]?.toUpperCase()}
+                                </div>
+                              )}
+                              {online && (
+                                <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-emerald-500 rounded-full border-2 border-white" />
                               )}
                             </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="font-semibold text-sm">{other.name}</p>
+                              <div className="flex items-center gap-1.5">
+                                {activeConv.product && (
+                                  <motion.button
+                                    onClick={() => navigate(`/product/${activeConv.product._id}`)}
+                                    className="text-xs text-brand-600 hover:underline truncate"
+                                    whileHover={{ x: 4 }}
+                                  >
+                                    About: {activeConv.product.title}
+                                  </motion.button>
+                                )}
+                              </div>
+                            </div>
+                            <span className={cn(
+                              'text-xs px-2 py-1 rounded-full',
+                              online ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-500'
+                            )}>
+                              {online ? 'Online' : 'Offline'}
+                            </span>
+                            <motion.button
+                              onClick={() => {
+                                const target = activeConv.participants.find((p) => p._id !== user._id);
+                                if (target && callModalRef.current) {
+                                  callModalRef.current.startCall(target._id, target.name);
+                                }
+                              }}
+                              className="p-2 rounded-full bg-brand-50 text-brand-600 hover:bg-brand-100 transition ml-1"
+                              whileTap={{ scale: 0.9 }}
+                              title="Voice call"
+                            >
+                              <Phone className="w-4 h-4" />
+                            </motion.button>
                           </>
                         );
                       })()}
@@ -302,6 +451,9 @@ export default function Chat() {
                       ) : (
                         messages.map((msg) => {
                           const isMe = msg.sender._id === user._id;
+                          const readByOthers = msg.readBy?.some(
+                            (r) => r.user !== user._id
+                          );
                           return (
                             <motion.div
                               key={msg._id}
@@ -317,13 +469,38 @@ export default function Chat() {
                                     : 'bg-slate-100 text-slate-900'
                                 )}
                               >
-                                <p className="text-sm leading-relaxed">{msg.content}</p>
-                                <p className={cn(
-                                  'text-xs mt-1',
+                                {msg.type === 'image' && msg.attachments?.length > 0 && (
+                                  <div className="mb-2 flex flex-wrap gap-1">
+                                    {msg.attachments.map((att, i) => (
+                                      <img
+                                        key={i}
+                                        src={att.url}
+                                        alt=""
+                                        className="rounded-lg max-w-[200px] max-h-[200px] object-cover"
+                                      />
+                                    ))}
+                                  </div>
+                                )}
+                                {msg.content && (
+                                  <p className="text-sm leading-relaxed">{msg.content}</p>
+                                )}
+                                <div className={cn(
+                                  'flex items-center justify-end gap-1.5 mt-1',
                                   isMe ? 'text-white/70' : 'text-slate-400'
                                 )}>
-                                  {formatTime(msg.createdAt)}
-                                </p>
+                                  <span className="text-[10px]">{formatTime(msg.createdAt)}</span>
+                                  {isMe && (
+                                    <>
+                                      {readByOthers || msg.status === 'read' ? (
+                                        <CheckCheck className="w-3.5 h-3.5 text-blue-300" />
+                                      ) : msg.status === 'delivered' ? (
+                                        <CheckCheck className="w-3.5 h-3.5" />
+                                      ) : (
+                                        <Check className="w-3.5 h-3.5" />
+                                      )}
+                                    </>
+                                  )}
+                                </div>
                               </div>
                             </motion.div>
                           );
@@ -338,9 +515,18 @@ export default function Chat() {
                             className="flex"
                           >
                             <div className="bg-slate-100 rounded-2xl px-4 py-3 inline-flex gap-1">
-                              <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                              <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                              <span className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                              <span
+                                className="w-2 h-2 bg-slate-400 rounded-full animate-bounce"
+                                style={{ animationDelay: '0ms' }}
+                              />
+                              <span
+                                className="w-2 h-2 bg-slate-400 rounded-full animate-bounce"
+                                style={{ animationDelay: '150ms' }}
+                              />
+                              <span
+                                className="w-2 h-2 bg-slate-400 rounded-full animate-bounce"
+                                style={{ animationDelay: '300ms' }}
+                              />
                             </div>
                           </motion.div>
                         )}
@@ -361,6 +547,7 @@ export default function Chat() {
                         onChange={handleInputChange}
                         placeholder="Type a message..."
                         className="input flex-1"
+                        autoFocus
                       />
                       <MagneticButton
                         type="submit"
@@ -368,7 +555,11 @@ export default function Chat() {
                         className="btn-primary px-4"
                         strength={0.15}
                       >
-                        {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                        {sending ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Send className="w-4 h-4" />
+                        )}
                       </MagneticButton>
                     </motion.form>
                   </>
@@ -387,6 +578,7 @@ export default function Chat() {
           </ScrollReveal>
         </div>
       </div>
+      <CallModal ref={callModalRef} />
     </PageTransition>
   );
 }

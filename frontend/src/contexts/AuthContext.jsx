@@ -9,17 +9,14 @@ export const AuthProvider = ({ children }) => {
 
   const loadUser = useCallback(async () => {
     try {
-      const token = localStorage.getItem('token');
-      if (!token) {
-        setLoading(false);
-        return;
-      }
+      // Auth is now cookie-based — the server reads the httpOnly access_token cookie.
+      // If the cookie is missing/expired, the server returns 401 and the API
+      // interceptor will attempt a refresh before redirecting to login.
       const { data } = await authService.me();
       setUser(data.user);
     } catch (err) {
       console.error('[Auth] Load user failed:', err);
-      localStorage.removeItem('token');
-      localStorage.removeItem('user');
+      setUser(null);
     } finally {
       setLoading(false);
     }
@@ -31,16 +28,14 @@ export const AuthProvider = ({ children }) => {
 
   const login = async (credentials) => {
     const { data } = await authService.login(credentials);
-    localStorage.setItem('token', data.token);
-    localStorage.setItem('user', JSON.stringify(data.user));
+    // Tokens are set as httpOnly cookies by the server — no localStorage needed.
     setUser(data.user);
     return data.user;
   };
 
   const register = async (userData) => {
     const { data } = await authService.register(userData);
-    localStorage.setItem('token', data.token);
-    localStorage.setItem('user', JSON.stringify(data.user));
+    // Tokens are set as httpOnly cookies by the server — no localStorage needed.
     setUser(data.user);
     return data.user;
   };
@@ -51,17 +46,12 @@ export const AuthProvider = ({ children }) => {
     } catch (err) {
       /* ignore */
     }
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
+    // Server clears the httpOnly cookies.
     setUser(null);
   };
 
   const updateUser = (updates) => {
-    setUser((prev) => {
-      const merged = { ...prev, ...updates };
-      localStorage.setItem('user', JSON.stringify(merged));
-      return merged;
-    });
+    setUser((prev) => ({ ...prev, ...updates }));
   };
 
   return (

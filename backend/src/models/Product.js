@@ -95,6 +95,8 @@ const productSchema = new mongoose.Schema(
         explanation: { type: String, default: '' },
         factors: [{ type: String }],
         generatedAt: { type: Date, default: Date.now },
+        refinedAt: { type: Date, default: null },
+        refinementAttempts: { type: Number, default: 0 },
         source: { type: String, enum: ['ml-model', 'heuristic'], default: 'heuristic' },
       },
       riskAssessment: {

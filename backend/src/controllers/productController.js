@@ -17,14 +17,23 @@ const buildFilters = (query) => {
     filter.$text = { $search: query.q };
   }
   if (query.category) filter.category = query.category;
-  if (query.brand) filter.brand = new RegExp(`^${query.brand}$`, 'i');
-  if (query.condition) filter.condition = query.condition;
-  if (query.minPrice || query.maxPrice) {
-    filter.price = {};
-    if (query.minPrice) filter.price.$gte = Number(query.minPrice);
-    if (query.maxPrice) filter.price.$lte = Number(query.maxPrice);
+  if (query.brand) {
+    const escaped = query.brand.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    filter.brand = new RegExp(`^${escaped}$`, 'i');
   }
-  if (query.location) filter['location.city'] = new RegExp(query.location, 'i');
+  if (query.condition) filter.condition = query.condition;
+  if (query.minPrice !== undefined && query.minPrice !== '' && query.minPrice !== null) {
+    filter.price = filter.price || {};
+    filter.price.$gte = Number(query.minPrice);
+  }
+  if (query.maxPrice !== undefined && query.maxPrice !== '' && query.maxPrice !== null) {
+    filter.price = filter.price || {};
+    filter.price.$lte = Number(query.maxPrice);
+  }
+  if (query.location) {
+    const escaped = query.location.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    filter['location.city'] = new RegExp(escaped, 'i');
+  }
   if (query.seller) filter.seller = query.seller;
 
   return filter;
@@ -54,15 +63,30 @@ const getProducts = async (req, res, next) => {
     const skip = (page - 1) * limit;
 
     const filter = buildFilters(req.query);
-    const sort = buildSort(req.query.sort);
+    const isTextSearch = !!filter.$text;
+
+    // When using $text search, MongoDB requires sorting by textScore
+    let sort;
+    if (isTextSearch) {
+      sort = { score: { $meta: 'textScore' } };
+    } else {
+      sort = buildSort(req.query.sort);
+    }
+
+    let query = Product.find(filter)
+      .populate('category', 'name slug')
+      .populate('seller', 'name avatar location averageResponseMinutes')
+      .sort(sort)
+      .skip(skip)
+      .limit(limit);
+
+    // Add textScore to returned documents when using text search
+    if (isTextSearch) {
+      query = query.select({ score: { $meta: 'textScore' } });
+    }
 
     const [items, total] = await Promise.all([
-      Product.find(filter)
-        .populate('category', 'name slug')
-        .populate('seller', 'name avatar location averageResponseMinutes')
-        .sort(sort)
-        .skip(skip)
-        .limit(limit),
+      query,
       Product.countDocuments(filter),
     ]);
 
@@ -280,7 +304,7 @@ const createProduct = async (req, res, next) => {
           confidence: 0,
           explanation: 'AI analysis in progress...',
           factors: [],
-          source: 'pending',
+          source: 'heuristic',
         },
         lastAnalyzedAt: new Date(),
       },

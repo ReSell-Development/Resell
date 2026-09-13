@@ -28,7 +28,7 @@ const loginValidation = [
 const updateProfileValidation = [
   body('name').optional().trim().notEmpty().withMessage('Name cannot be empty').isLength({ max: 60 }).withMessage('Name too long'),
   body('bio').optional().isString().isLength({ max: 500 }).withMessage('Bio too long'),
-  body('phone').optional().isString(),
+  body('phone').optional().isString().trim().isLength({ max: 20 }).withMessage('Phone too long').matches(/^[\d\s+\-()]*$/).withMessage('Invalid phone format'),
   body('location').optional().isString(),
   body('avatar').optional().isObject(),
   handleValidation,
@@ -109,7 +109,10 @@ const createConversationValidation = [
 
 const sendMessageValidation = [
   body('conversationId').notEmpty().withMessage('Conversation is required').isMongoId().withMessage('Invalid conversation ID'),
-  body('content').trim().notEmpty().withMessage('Message content is required').isLength({ max: 2000 }).withMessage('Message too long'),
+  body('content').optional({ checkFalsy: true }).trim().isLength({ max: 2000 }).withMessage('Message too long'),
+  body('attachments').optional().isArray().withMessage('Attachments must be an array'),
+  body('attachments.*.url').optional().notEmpty().withMessage('Attachment URL is required'),
+  body('attachments.*.publicId').optional().isString(),
   handleValidation,
 ];
 
@@ -180,6 +183,33 @@ const productQueryValidation = [
   handleValidation,
 ];
 
+const createOfferValidation = [
+  body('productId').notEmpty().withMessage('Product is required').isMongoId().withMessage('Invalid product ID'),
+  body('amount').isFloat({ min: 1 }).withMessage('Amount must be a positive number'),
+  body('message').optional().isString().trim().isLength({ max: 500 }).withMessage('Message too long'),
+  body('currencyCode').optional().isString().isLength({ min: 3, max: 3 }).withMessage('currencyCode must be 3 letters'),
+  handleValidation,
+];
+
+const counterOfferValidation = [
+  param('id').isMongoId().withMessage('Invalid offer ID'),
+  body('amount').isFloat({ min: 1 }).withMessage('Amount must be a positive number'),
+  body('message').optional().isString().trim().isLength({ max: 500 }),
+  handleValidation,
+];
+
+const createCheckoutSessionValidation = [
+  body('productId').notEmpty().withMessage('Product ID is required').isMongoId().withMessage('Invalid product ID'),
+  body('shippingAddress').optional().isObject().withMessage('Shipping address must be an object'),
+  body('shippingAddress.fullName').optional().isString().trim().notEmpty(),
+  body('shippingAddress.phone').optional().isString().trim().notEmpty(),
+  body('shippingAddress.line1').optional().isString().trim().notEmpty(),
+  body('shippingAddress.city').optional().isString().trim().notEmpty(),
+  body('shippingAddress.postalCode').optional().isString().trim().notEmpty(),
+  body('shippingAddress.country').optional().isString().trim().notEmpty(),
+  handleValidation,
+];
+
 module.exports = {
   handleValidation,
   registerValidation,
@@ -200,4 +230,7 @@ module.exports = {
   addReviewValidation,
   productQueryValidation,
   favoriteValidation,
+  createOfferValidation,
+  counterOfferValidation,
+  createCheckoutSessionValidation,
 };

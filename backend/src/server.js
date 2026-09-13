@@ -5,34 +5,32 @@ const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const compression = require('compression');
+const cookieParser = require('cookie-parser');
 const rateLimit = require('express-rate-limit');
 const mongoSanitize = require('express-mongo-sanitize');
 const dotenv = require('dotenv');
 const { Server } = require('socket.io');
 
-dotenv.config();
+// Skip dotenv in test — jest.global.setup.js sets MONGODB_URI for the
+// in-memory server and dotenv would overwrite it with the real URI.
+// validateEnv() also depends on env vars that dotenv would load, so
+// skip it in tests as well — the global setup handles what's needed.
+if (process.env.NODE_ENV !== 'test') {
+  dotenv.config();
+  const validateEnv = require('./config/validateEnv');
+  validateEnv();
+}
 
 const connectDB = require('./config/db');
 const setupSocket = require('./sockets');
 const { errorHandler, notFound } = require('./utils/errorHandler');
-
-const authRoutes = require('./routes/authRoutes');
-const productRoutes = require('./routes/productRoutes');
-const categoryRoutes = require('./routes/categoryRoutes');
-const favoriteRoutes = require('./routes/favoriteRoutes');
-const chatRoutes = require('./routes/chatRoutes');
-const reportRoutes = require('./routes/reportRoutes');
-const sellerRoutes = require('./routes/sellerRoutes');
-const adminRoutes = require('./routes/adminRoutes');
-const exchangeRoutes = require('./routes/exchangeRoutes');
-const { startScheduler: startExchangeScheduler } = require('./services/exchangeRates');
 
 const app = express();
 const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: process.env.CLIENT_URL || '*',
+    origin: process.env.CLIENT_URL,
     credentials: true,
   },
 });
@@ -43,23 +41,50 @@ setupSocket(io);
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: 'cross-origin' },
-    contentSecurityPolicy: false,
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", 'data:', 'https://res.cloudinary.com'],
+        fontSrc: ["'self'"],
+        connectSrc: ["'self'", process.env.CLIENT_URL || ''].filter(Boolean),
+        frameSrc: ["'none'"],
+        objectSrc: ["'none'"],
+      },
+    },
+    referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+    permissionsPolicy: {
+      camera: [],
+      microphone: [],
+      geolocation: [],
+      interestcohort: [],
+    },
   })
 );
 app.use(compression());
+
+// Stripe webhook needs raw body — mount BEFORE express.json()
+// This route handles its own body parsing via express.raw()
+const checkoutRoutes = require('./routes/checkoutRoutes');
+app.use('/api/checkout', checkoutRoutes);
+
 app.use(
   cors({
-    origin: process.env.CLIENT_URL || '*',
+    origin: process.env.CLIENT_URL,
     credentials: true,
   })
 );
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(cookieParser());
 app.use(mongoSanitize());
 
 if (process.env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
 }
+
+const isTest = process.env.NODE_ENV === 'test';
 
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -68,7 +93,7 @@ const limiter = rateLimit({
   legacyHeaders: false,
   message: { success: false, code: 'RATE_LIMIT', message: 'Too many requests' },
 });
-app.use('/api', limiter);
+if (!isTest) app.use('/api', limiter);
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -80,8 +105,37 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-app.use('/api/auth/login', authLimiter);
-app.use('/api/auth/register', authLimiter);
+if (!isTest) {
+  app.use('/api/auth/login', authLimiter);
+  app.use('/api/auth/register', authLimiter);
+}
+
+const productCreateLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 20,
+  message: { success: false, code: 'RATE_LIMIT', message: 'Too many products created. Try again later.' },
+});
+
+const chatLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 60,
+  message: { success: false, code: 'RATE_LIMIT', message: 'Too many messages. Slow down.' },
+});
+
+const authRoutes = require('./routes/authRoutes');
+const productRoutes = require('./routes/productRoutes');
+const categoryRoutes = require('./routes/categoryRoutes');
+const favoriteRoutes = require('./routes/favoriteRoutes');
+const chatRoutes = require('./routes/chatRoutes');
+const reportRoutes = require('./routes/reportRoutes');
+const sellerRoutes = require('./routes/sellerRoutes');
+const adminRoutes = require('./routes/adminRoutes');
+const exchangeRoutes = require('./routes/exchangeRoutes');
+const offerRoutes = require('./routes/offerRoutes');
+const notificationRoutes = require('./routes/notificationRoutes');
+const orderRoutes = require('./routes/orderRoutes');
+const { startScheduler: startExchangeScheduler } = require('./services/exchangeRates');
+const { registerSweepJob } = require('./queues');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/products', productRoutes);
@@ -92,26 +146,66 @@ app.use('/api/reports', reportRoutes);
 app.use('/api/sellers', sellerRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/exchange-rates', exchangeRoutes);
+app.use('/api/offers', offerRoutes);
+app.use('/api/notifications', notificationRoutes);
+app.use('/api/orders', orderRoutes);
 
-startExchangeScheduler();
+if (!isTest) {
+  startExchangeScheduler();
+}
 
 app.use(notFound);
 app.use(errorHandler);
 
 const PORT = process.env.PORT || 5000;
 
-const start = async () => {
-  try {
-    await connectDB();
-    server.listen(PORT, () => {
-      console.log(`[Server] Running on port ${PORT} [${process.env.NODE_ENV || 'development'}]`);
-    });
-  } catch (err) {
-    console.error('[Server] Startup failed:', err);
-    process.exit(1);
-  }
-};
+// Only start the server when run directly (node src/server.js), not when
+// required as a module (e.g. by tests).  Tests import { app, server } and
+// use supertest against `app` without binding a real port.
+if (require.main === module) {
+  const start = async () => {
+    try {
+      await connectDB();
+      server.listen(PORT, () => {
+        console.log(`[Server] Running on port ${PORT} [${process.env.NODE_ENV || 'development'}]`);
+        registerSweepJob();
+      });
+    } catch (err) {
+      console.error('[Server] Startup failed:', err);
+      process.exit(1);
+    }
+  };
+  start();
+}
 
-start();
+// ── Process-level error handlers ────────────────────────────────────
+process.on('unhandledRejection', (reason) => {
+  console.error('[FATAL] Unhandled Rejection:', reason);
+  gracefulShutdown(1);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL] Uncaught Exception:', err);
+  gracefulShutdown(1);
+});
+
+function gracefulShutdown(exitCode = 0) {
+  console.log('[Server] Shutting down gracefully...');
+  server.close(() => {
+    const mongoose = require('mongoose');
+    mongoose.connection.close(false).then(() => {
+      console.log('[Server] Closed DB connection');
+      process.exit(exitCode);
+    });
+  });
+  // Force exit after 10s if graceful shutdown hangs
+  setTimeout(() => {
+    console.error('[Server] Forced shutdown after timeout');
+    process.exit(exitCode);
+  }, 10000);
+}
+
+process.on('SIGTERM', () => gracefulShutdown(0));
+process.on('SIGINT', () => gracefulShutdown(0));
 
 module.exports = { app, server, io };

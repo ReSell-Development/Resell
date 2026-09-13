@@ -1,4 +1,5 @@
 const { verifyToken } = require('../utils/jwt');
+const { isBlacklisted } = require('../utils/tokenBlacklist');
 const User = require('../models/User');
 const AppError = require('../utils/AppError');
 
@@ -7,8 +8,8 @@ const protect = async (req, res, next) => {
     let token;
     if (req.headers.authorization?.startsWith('Bearer ')) {
       token = req.headers.authorization.split(' ')[1];
-    } else if (req.cookies?.token) {
-      token = req.cookies.token;
+    } else if (req.cookies?.access_token) {
+      token = req.cookies.access_token;
     }
 
     if (!token) {
@@ -16,6 +17,11 @@ const protect = async (req, res, next) => {
     }
 
     const decoded = verifyToken(token);
+
+    if (decoded.jti && isBlacklisted(decoded.jti)) {
+      return next(new AppError('Token has been revoked. Please log in again.', 401, 'TOKEN_REVOKED'));
+    }
+
     const user = await User.findById(decoded.id);
 
     if (!user || !user.isActive) {

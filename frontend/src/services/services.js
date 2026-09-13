@@ -82,3 +82,23 @@ export const adminService = {
   products: (params) => api.get('/admin/products', { params }),
   moderateProduct: (id, data) => api.put(`/admin/products/${id}`, data),
 };
+
+export const notificationService = {
+  list: (params) => api.get('/notifications', { params }),
+  unread: () => api.get('/notifications/unread'),
+  markRead: (id) => api.patch(`/notifications/${id}/read`),
+  markAllRead: () => api.patch('/notifications/read-all'),
+};
+
+export const checkoutService = {
+  createSession: (data) => api.post('/checkout/session', data),
+};
+
+export const orderService = {
+  myOrders: (params) => api.get('/orders/mine', { params }),
+  mySales: (params) => api.get('/orders/selling', { params }),
+  get: (id) => api.get(`/orders/${id}`),
+  ship: (id, data) => api.patch(`/orders/${id}/ship`, data),
+  deliver: (id) => api.patch(`/orders/${id}/deliver`),
+  cancel: (id) => api.post(`/orders/${id}/cancel`),
+};

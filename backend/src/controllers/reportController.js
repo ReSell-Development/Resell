@@ -4,6 +4,16 @@ const User = require('../models/User');
 const AppError = require('../utils/AppError');
 const audit = require('../middleware/audit');
 
+const populateTarget = async (report) => {
+  if (report.targetType === 'product') {
+    const doc = await Product.findById(report.target).select('title images status');
+    report.target = doc;
+  } else {
+    const doc = await User.findById(report.target).select('name email');
+    report.target = doc;
+  }
+};
+
 const createReport = async (req, res, next) => {
   try {
     const { targetType, target, reason, description } = req.body;
@@ -76,11 +86,7 @@ const getReports = async (req, res, next) => {
     // Populate target based on targetType
     await Promise.all(
       items.map(async (r) => {
-        if (r.targetType === 'product') {
-          await r.populate('target', 'title images status');
-        } else {
-          await r.populate('target', 'name email');
-        }
+        await populateTarget(r);
       })
     );
 

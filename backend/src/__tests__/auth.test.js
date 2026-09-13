@@ -3,6 +3,13 @@ const mongoose = require('mongoose');
 const { app, server } = require('../server');
 const User = require('../models/User');
 
+// Helper: extract access_token from set-cookie header
+const extractToken = (res) => {
+  const setCookie = res.headers['set-cookie'] || [];
+  const accessCookie = setCookie.find((c) => c.startsWith('access_token='));
+  return accessCookie ? accessCookie.split(';')[0].split('=')[1] : null;
+};
+
 describe('Auth Routes', () => {
   let authToken;
 
@@ -31,36 +38,34 @@ describe('Auth Routes', () => {
         email: 'test@example.com',
         password: 'password123',
       });
-    return res.body.token;
+    return extractToken(res);
   };
 
   beforeEach(async () => {
     authToken = await getAuthToken();
   });
 
-  afterAll(async () => {
-    await server.close();
-  });
-
   describe('POST /api/auth/register', () => {
-    it('should register a new user', async () => {
+    it('should register a new user and set cookies', async () => {
       const res = await request(app)
         .post('/api/auth/register')
         .send({
           name: 'Test User',
-          email: 'test@example.com',
+          email: 'newuser@example.com',
           password: 'password123',
         })
         .expect(201);
 
       expect(res.body.success).toBe(true);
-      expect(res.body.token).toBeDefined();
       expect(res.body.user).toMatchObject({
         name: 'Test User',
-        email: 'test@example.com',
+        email: 'newuser@example.com',
         role: 'buyer',
       });
-      authToken = res.body.token;
+      // Token should be in httpOnly cookie, not in response body
+      expect(res.body.token).toBeUndefined();
+      const token = extractToken(res);
+      expect(token).toBeDefined();
     });
 
     it('should reject duplicate email', async () => {
@@ -130,7 +135,7 @@ describe('Auth Routes', () => {
   });
 
   describe('POST /api/auth/login', () => {
-    it('should login with valid credentials', async () => {
+    it('should login with valid credentials and set httpOnly cookies', async () => {
       const res = await request(app)
         .post('/api/auth/login')
         .send({
@@ -140,11 +145,17 @@ describe('Auth Routes', () => {
         .expect(200);
 
       expect(res.body.success).toBe(true);
-      expect(res.body.token).toBeDefined();
-      expect(res.body.user).toMatchObject({
-        email: 'test@example.com',
-      });
-      authToken = res.body.token;
+      expect(res.body.user).toMatchObject({ email: 'test@example.com' });
+      // Token must NOT be in the response body
+      expect(res.body.token).toBeUndefined();
+      // Token must be in httpOnly cookie
+      const token = extractToken(res);
+      expect(token).toBeDefined();
+      // Verify cookie flags
+      const setCookie = res.headers['set-cookie'] || [];
+      const accessCookie = setCookie.find((c) => c.startsWith('access_token='));
+      expect(accessCookie).toContain('HttpOnly');
+      authToken = token;
     });
 
     it('should reject invalid password', async () => {
@@ -182,16 +193,23 @@ describe('Auth Routes', () => {
   });
 
   describe('GET /api/auth/me', () => {
-    it('should return current user with valid token', async () => {
+    it('should return current user with valid token cookie', async () => {
+      const res = await request(app)
+        .get('/api/auth/me')
+        .set('Cookie', `access_token=${authToken}`)
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(res.body.user).toMatchObject({ email: 'test@example.com' });
+    });
+
+    it('should also work with Bearer header', async () => {
       const res = await request(app)
         .get('/api/auth/me')
         .set('Authorization', `Bearer ${authToken}`)
         .expect(200);
 
       expect(res.body.success).toBe(true);
-      expect(res.body.user).toMatchObject({
-        email: 'test@example.com',
-      });
     });
 
     it('should reject request without token', async () => {
@@ -205,7 +223,7 @@ describe('Auth Routes', () => {
     it('should reject invalid token', async () => {
       const res = await request(app)
         .get('/api/auth/me')
-        .set('Authorization', 'Bearer invalid-token')
+        .set('Cookie', 'access_token=invalid-token')
         .expect(401);
 
       expect(res.body.code).toBe('TOKEN_INVALID');
@@ -216,7 +234,7 @@ describe('Auth Routes', () => {
     it('should update user profile', async () => {
       const res = await request(app)
         .put('/api/auth/profile')
-        .set('Authorization', `Bearer ${authToken}`)
+        .set('Cookie', `access_token=${authToken}`)
         .send({
           name: 'Updated Name',
           bio: 'New bio',
@@ -231,7 +249,7 @@ describe('Auth Routes', () => {
     it('should reject too long name', async () => {
       const res = await request(app)
         .put('/api/auth/profile')
-        .set('Authorization', `Bearer ${authToken}`)
+        .set('Cookie', `access_token=${authToken}`)
         .send({
           name: 'a'.repeat(61),
         })
@@ -245,7 +263,7 @@ describe('Auth Routes', () => {
     it('should change password with valid current password', async () => {
       const res = await request(app)
         .put('/api/auth/password')
-        .set('Authorization', `Bearer ${authToken}`)
+        .set('Cookie', `access_token=${authToken}`)
         .send({
           currentPassword: 'password123',
           newPassword: 'newpassword123',
@@ -258,7 +276,7 @@ describe('Auth Routes', () => {
     it('should reject wrong current password', async () => {
       const res = await request(app)
         .put('/api/auth/password')
-        .set('Authorization', `Bearer ${authToken}`)
+        .set('Cookie', `access_token=${authToken}`)
         .send({
           currentPassword: 'wrongpassword',
           newPassword: 'newpassword123',
@@ -271,7 +289,7 @@ describe('Auth Routes', () => {
     it('should reject short new password', async () => {
       const res = await request(app)
         .put('/api/auth/password')
-        .set('Authorization', `Bearer ${authToken}`)
+        .set('Cookie', `access_token=${authToken}`)
         .send({
           currentPassword: 'password123',
           newPassword: '123',

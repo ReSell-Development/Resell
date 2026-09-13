@@ -84,6 +84,24 @@ services:
       redis:
         condition: service_healthy
 
+  worker-price:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: resell-worker-price
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      MONGODB_URI: mongodb://mongodb:27017/resell
+      JWT_SECRET: ${JWT_SECRET}
+      REDIS_URL: redis://redis:6379
+    command: ["node", "src/workers/priceAnalyzer.js"]
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   frontend:
     build:
       context: ./frontend

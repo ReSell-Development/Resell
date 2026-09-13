@@ -3,6 +3,8 @@ const Message = require('../models/Message');
 const Product = require('../models/Product');
 const AppError = require('../utils/AppError');
 const User = require('../models/User');
+const { toKey } = require('../utils/mongoId');
+const { notify } = require('../services/notificationService');
 
 const getOrCreateConversation = async (req, res, next) => {
   try {
@@ -21,17 +23,28 @@ const getOrCreateConversation = async (req, res, next) => {
       product: productId || null,
     });
 
+    let isNew = false;
     if (!conversation) {
       conversation = await Conversation.create({
         participants: [req.user._id, recipientId],
         product: productId || null,
-        unreadCounts: { [req.user._id.toString()]: 0, [recipientId]: 0 },
+        unreadCounts: { [toKey(req.user._id)]: 0, [toKey(recipientId)]: 0 },
       });
+      isNew = true;
     }
 
     const populated = await Conversation.findById(conversation._id)
       .populate('participants', 'name avatar role')
       .populate('product', 'title images price status');
+
+    if (isNew) {
+      const io = req.app.get('io');
+      if (io) {
+        io.to(`user:${recipientId}`).emit('conversation:update', {
+          conversationId: conversation._id,
+        });
+      }
+    }
 
     res.json({ success: true, conversation: populated });
   } catch (err) {
@@ -92,7 +105,7 @@ const getMessages = async (req, res, next) => {
 
     // Reset unread count
     const unread = conversation.unreadCounts || new Map();
-    unread.set(req.user._id.toString(), 0);
+    unread.set(toKey(req.user._id), 0);
     conversation.unreadCounts = unread;
     await conversation.save();
 
@@ -108,9 +121,9 @@ const getMessages = async (req, res, next) => {
 
 const sendMessage = async (req, res, next) => {
   try {
-    const { conversationId, content } = req.body;
-    if (!conversationId || !content) {
-      throw new AppError('Conversation and content are required', 400, 'VALIDATION_ERROR');
+    const { conversationId, content, attachments } = req.body;
+    if (!conversationId || (!content && (!attachments || attachments.length === 0))) {
+      throw new AppError('Conversation and content or attachments are required', 400, 'VALIDATION_ERROR');
     }
 
     const conversation = await Conversation.findById(conversationId);
@@ -120,18 +133,23 @@ const sendMessage = async (req, res, next) => {
       throw new AppError('Not authorized', 403, 'FORBIDDEN');
     }
 
-    const message = await Message.create({
+    const msgData = {
       conversation: conversationId,
       sender: req.user._id,
-      content,
       readBy: [{ user: req.user._id, readAt: new Date() }],
-    });
+    };
+    if (content) msgData.content = content;
+    if (attachments && attachments.length > 0) {
+      msgData.attachments = attachments;
+      msgData.type = 'image';
+    }
 
-    // Update conversation
+    const message = await Message.create(msgData);
+
     const unread = conversation.unreadCounts || new Map();
     conversation.participants.forEach((pId) => {
-      const key = pId.toString();
-      if (key !== req.user._id.toString()) {
+      const key = toKey(pId);
+      if (key !== toKey(req.user._id)) {
         unread.set(key, (unread.get(key) || 0) + 1);
       } else {
         unread.set(key, 0);
@@ -144,22 +162,30 @@ const sendMessage = async (req, res, next) => {
 
     const populated = await Message.findById(message._id).populate('sender', 'name avatar');
 
-    // Emit to socket if available
+    conversation.participants.forEach(async (pId) => {
+      if (pId.toString() !== req.user._id.toString()) {
+        await notify({
+          recipient: pId,
+          type: 'message',
+          payload: { conversationId, senderId: req.user._id, productId: conversation.product },
+        });
+      }
+    });
+
     const io = req.app.get('io');
     if (io) {
-      // Send message:new to all participants except sender (to avoid duplicate with optimistic UI)
       conversation.participants.forEach((pId) => {
         const key = pId.toString();
         if (key !== req.user._id.toString()) {
           io.to(`user:${key}`).emit('message:new', populated);
-        }
-      });
-      // Also notify each participant for conversation list update
-      conversation.participants.forEach((pId) => {
-        const key = pId.toString();
-        if (key !== req.user._id.toString()) {
           io.to(`user:${key}`).emit('conversation:update', { conversationId });
         }
+      });
+      // Send delivery confirmation to sender
+      io.to(`user:${req.user._id.toString()}`).emit('chat:message:sent', {
+        conversationId,
+        messageId: message._id,
+        status: 'delivered',
       });
     }
 
@@ -177,33 +203,37 @@ const markRead = async (req, res, next) => {
       throw new AppError('Not authorized', 403, 'FORBIDDEN');
     }
 
-    await Message.updateMany(
+    const result = await Message.updateMany(
       {
         conversation: conversation._id,
         sender: { $ne: req.user._id },
         'readBy.user': { $ne: req.user._id },
       },
-      { $push: { readBy: { user: req.user._id, readAt: new Date() } } }
+      {
+        $push: { readBy: { user: req.user._id, readAt: new Date() } },
+        $set: { status: 'read' },
+      }
     );
 
     const unread = conversation.unreadCounts || new Map();
-    unread.set(req.user._id.toString(), 0);
+    unread.set(toKey(req.user._id), 0);
     conversation.unreadCounts = unread;
     await conversation.save();
 
     const io = req.app.get('io');
     if (io) {
       conversation.participants.forEach((pId) => {
-        if (pId.toString() !== req.user._id.toString()) {
+        if (toKey(pId) !== toKey(req.user._id)) {
           io.to(`user:${pId.toString()}`).emit('conversation:read', {
             conversationId: conversation._id,
             readerId: req.user._id,
+            readCount: result.modifiedCount,
           });
         }
       });
     }
 
-    res.json({ success: true });
+    res.json({ success: true, readCount: result.modifiedCount });
   } catch (err) {
     next(err);
   }

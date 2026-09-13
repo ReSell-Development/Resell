@@ -12,6 +12,180 @@ const Product = require('../models/Product');
 const Review = require('../models/Review');
 const Sale = require('../models/Sale');
 
+const crypto = require('crypto');
+
+async function seedDuplicateFixtures(sellers, categories, users) {
+  const { generateFixtures, computeHashes, writeReport } = require('./generateFixtures');
+  const { uploadToCloudinary, isConfigured: isCloudinaryConfigured } = require('../config/cloudinary');
+  const { perceptualHashFromBuffer } = require('../services/imageHash');
+  const path = require('path');
+
+  console.log('\n[Seed] ── Duplicate Fixture Seeding ──');
+
+  // 1. Download + transform images
+  const fixtures = await generateFixtures();
+
+  // 2. Compute hashes
+  const hashed = await computeHashes(fixtures);
+
+  // 3. Write report
+  const reportPath = path.join(__dirname, '../../duplicate-fixture-report.json');
+  const report = writeReport(hashed, reportPath);
+
+  // 4. Upload originals to Cloudinary (if configured) or use placeholder URLs
+  const cloudinaryAvailable = isCloudinaryConfigured();
+  if (!cloudinaryAvailable) {
+    console.log('[Seed] Cloudinary not configured — using local buffer metadata as image URLs (hashes still computed from real image data)');
+  }
+
+  const fixtureSeller = sellers[0];
+  const fixtureProducts = [];
+
+  // Seed original images as products
+  for (const img of hashed.originals) {
+    let imageUrl = `fixture://originals/${img.id}`;
+    let publicId = `fixture_original_${img.id}`;
+
+    if (cloudinaryAvailable) {
+      try {
+        const uploaded = await uploadToCloudinary(img.buffer, 'resell/fixtures');
+        imageUrl = uploaded.url;
+        publicId = uploaded.publicId;
+      } catch (err) {
+        console.warn(`[Seed] Cloudinary upload failed for ${img.id}: ${err.message}`);
+      }
+    }
+
+    const category = categories.find((c) => c.name === img.category);
+    const product = await Product.create({
+      title: `[FIXTURE] ${img.title}`,
+      description: `Duplicate detection fixture: original image for ${img.id}. Hash: ${img.hash}`,
+      price: 100,
+      originalPrice: 200,
+      category: category ? category._id : categories[0]._id,
+      brand: 'Fixture',
+      condition: 'like-new',
+      yearsUsed: 1,
+      location: { city: 'Testville', state: 'TS', country: 'USA' },
+      images: [{ url: imageUrl, publicId, isPrimary: true }],
+      seller: fixtureSeller._id,
+      status: 'active',
+      aiAnalysis: {
+        classification: { predictedCategory: img.category, confidence: 1.0 },
+        conditionScore: 90,
+        damageScore: 5,
+        imageHashes: [img.hash],
+        priceRecommendation: { recommendedPrice: 100, minPrice: 85, maxPrice: 115, confidence: 1.0, explanation: 'Fixture', factors: [], source: 'heuristic' },
+        riskAssessment: { riskScore: 0, riskLevel: 'low', factors: [] },
+        lastAnalyzedAt: new Date(),
+      },
+    });
+    fixtureProducts.push({ ...product.toObject(), _fixtureGroup: 'original', _fixtureHash: img.hash });
+  }
+
+  // Seed variant images (true-duplicates)
+  for (const v of hashed.variants) {
+    let imageUrl = `fixture://variants/${v.originalId}_${v.type}`;
+    let publicId = `fixture_variant_${v.originalId}_${v.type.replace(/[^a-z0-9]/g, '_')}`;
+
+    if (cloudinaryAvailable) {
+      try {
+        const uploaded = await uploadToCloudinary(v.buffer, 'resell/fixtures');
+        imageUrl = uploaded.url;
+        publicId = uploaded.publicId;
+      } catch (err) {
+        console.warn(`[Seed] Cloudinary upload failed for variant ${v.originalId}/${v.type}: ${err.message}`);
+      }
+    }
+
+    const category = categories.find((c) => c.name === v.category);
+    const product = await Product.create({
+      title: `[FIXTURE-VARIANT] ${v.originalTitle} (${v.type})`,
+      description: `Duplicate detection fixture: ${v.type} variant of ${v.originalId}. Hash: ${v.hash}`,
+      price: 90,
+      originalPrice: 200,
+      category: category ? category._id : categories[0]._id,
+      brand: 'Fixture',
+      condition: 'like-new',
+      yearsUsed: 1,
+      location: { city: 'Testville', state: 'TS', country: 'USA' },
+      images: [{ url: imageUrl, publicId, isPrimary: true }],
+      seller: fixtureSeller._id,
+      status: 'active',
+      aiAnalysis: {
+        classification: { predictedCategory: v.category, confidence: 1.0 },
+        conditionScore: 90,
+        damageScore: 5,
+        imageHashes: [v.hash],
+        priceRecommendation: { recommendedPrice: 90, minPrice: 76, maxPrice: 104, confidence: 1.0, explanation: 'Fixture variant', factors: [], source: 'heuristic' },
+        riskAssessment: { riskScore: 0, riskLevel: 'low', factors: [] },
+        lastAnalyzedAt: new Date(),
+      },
+    });
+    fixtureProducts.push({ ...product.toObject(), _fixtureGroup: 'true-duplicate', _fixtureHash: v.hash, _fixtureOriginalId: v.originalId, _fixtureVariantType: v.type });
+  }
+
+  // Seed similar-but-different images
+  for (const s of hashed.similarPairs) {
+    let imageUrl = `fixture://similar/${s.id}`;
+    let publicId = `fixture_similar_${s.id}`;
+
+    if (cloudinaryAvailable) {
+      try {
+        const uploaded = await uploadToCloudinary(s.buffer, 'resell/fixtures');
+        imageUrl = uploaded.url;
+        publicId = uploaded.publicId;
+      } catch (err) {
+        console.warn(`[Seed] Cloudinary upload failed for similar ${s.id}: ${err.message}`);
+      }
+    }
+
+    const category = categories.find((c) => c.name === s.category);
+    const product = await Product.create({
+      title: `[FIXTURE-SIMILAR] ${s.title}`,
+      description: `Duplicate detection fixture: similar-but-different image ${s.id}. Hash: ${s.hash}`,
+      price: 100,
+      originalPrice: 200,
+      category: category ? category._id : categories[0]._id,
+      brand: 'Fixture',
+      condition: 'like-new',
+      yearsUsed: 1,
+      location: { city: 'Testville', state: 'TS', country: 'USA' },
+      images: [{ url: imageUrl, publicId, isPrimary: true }],
+      seller: fixtureSeller._id,
+      status: 'active',
+      aiAnalysis: {
+        classification: { predictedCategory: s.category, confidence: 1.0 },
+        conditionScore: 90,
+        damageScore: 5,
+        imageHashes: [s.hash],
+        priceRecommendation: { recommendedPrice: 100, minPrice: 85, maxPrice: 115, confidence: 1.0, explanation: 'Fixture similar pair', factors: [], source: 'heuristic' },
+        riskAssessment: { riskScore: 0, riskLevel: 'low', factors: [] },
+        lastAnalyzedAt: new Date(),
+      },
+    });
+    fixtureProducts.push({ ...product.toObject(), _fixtureGroup: 'similar-but-duplicate', _fixtureHash: s.hash, _fixturePairGroup: s.pairGroup });
+  }
+
+  console.log(`[Seed] Created ${fixtureProducts.length} fixture products`);
+  console.log(`[Seed] Fixture report: ${reportPath}`);
+
+  // Print hash summary
+  console.log('\n[Seed] Hash Summary:');
+  console.log('  Originals:');
+  for (const img of hashed.originals) {
+    console.log(`    ${img.id.padEnd(14)} ${img.hash}`);
+  }
+  console.log('  Variants:');
+  for (const v of hashed.variants) {
+    console.log(`    ${v.originalId}/${v.type.padEnd(30)} ${v.hash}`);
+  }
+  console.log('  Similar-but-different:');
+  for (const s of hashed.similarPairs) {
+    console.log(`    ${s.id.padEnd(14)} ${s.hash}`);
+  }
+}
+
 const seed = async () => {
   try {
     await mongoose.connect(process.env.MONGODB_URI);
@@ -31,7 +205,7 @@ const seed = async () => {
     await User.create({
       name: 'Admin',
       email: process.env.ADMIN_EMAIL || 'admin@resell.com',
-      password: process.env.ADMIN_PASSWORD || 'Admin@123456',
+      password: process.env.ADMIN_PASSWORD || crypto.randomBytes(18).toString('base64'),
       role: 'admin',
       isVerified: true,
     });
@@ -400,9 +574,14 @@ const seed = async () => {
     }
     console.log('[Seed] Created reviews');
 
+    // ── Duplicate fixture seeding ──────────────────────────────────────
+    if (process.argv.includes('--with-duplicate-fixtures')) {
+      await seedDuplicateFixtures(sellers, categories, users);
+    }
+
     console.log('\n[Seed] Done!');
     console.log('---');
-    console.log('Admin: admin@resell.com / Admin@123456');
+    console.log('Admin: admin@resell.com (password set via ADMIN_PASSWORD env var)');
     console.log('Users: alex@resell.com / Password123!');
     process.exit(0);
   } catch (err) {

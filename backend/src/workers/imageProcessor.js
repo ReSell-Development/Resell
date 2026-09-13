@@ -2,12 +2,11 @@ const { Worker } = require('bullmq');
 const { connection } = require('../queues');
 const Product = require('../models/Product');
 const Category = require('../models/Category');
-const { uploadToCloudinary } = require('../config/cloudinary');
 const { perceptualHashFromBuffer } = require('../services/imageHash');
-const computerVision = require('../services/computerVision');
+const { createCVProvider } = require('../services/cvAdapter');
+const cvProvider = createCVProvider();
 const { calculateRecommendedPrice } = require('../services/priceRecommendation');
 const { detectRisk } = require('../services/fraudDetection');
-const { fetch } = require('undici');
 
 const imageProcessingWorker = new Worker(
   'image-processing',
@@ -30,23 +29,22 @@ const imageProcessingWorker = new Worker(
           throw new Error('No image buffer or URL provided');
         }
 
-        const uploaded = await uploadToCloudinary(buffer, 'resell/products');
+        // Images were already uploaded to Cloudinary during the request.
+        // Reuse the existing URL/publicId instead of uploading again.
         const hash = await perceptualHashFromBuffer(buffer);
 
         const [condition, damage, classification] = await Promise.all([
-          computerVision.assessCondition(buffer),
-          computerVision.detectDamage(buffer),
-          computerVision.classifyProduct(buffer, {
+          cvProvider.assessCondition(buffer),
+          cvProvider.detectDamage(buffer),
+          cvProvider.classifyProduct(buffer, {
             filename: image.originalname || 'image.jpg',
             title: productData.title,
           }),
         ]);
 
         results.push({
-          url: uploaded.url,
-          publicId: uploaded.publicId,
-          width: uploaded.width,
-          height: uploaded.height,
+          url: image.url,
+          publicId: image.publicId,
           hash,
           analysis: {
             conditionScore: condition.score,
@@ -114,6 +112,7 @@ const imageProcessingWorker = new Worker(
               explanation: priceRec.explanation,
               factors: priceRec.factors,
               source: priceRec.source,
+              generatedAt: new Date(),
             },
             lastAnalyzedAt: new Date(),
           },
@@ -139,6 +138,13 @@ const imageProcessingWorker = new Worker(
       };
 
       await product.save();
+
+      try {
+        const { priceAnalysisQueue } = require('../queues');
+        await priceAnalysisQueue.add('reprice', { productId }, { delay: 30000 });
+      } catch (err) {
+        console.warn(`[Worker] Could not enqueue price-analysis job for ${productId}: ${err.message}`);
+      }
 
       console.log(`[Worker] Completed processing for product ${productId}`);
       return { success: true, productId };

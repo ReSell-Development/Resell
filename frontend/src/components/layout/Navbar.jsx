@@ -6,6 +6,7 @@ import {
   ShoppingBag,
   Heart,
   MessageCircle,
+  Bell,
   User,
   LogOut,
   LayoutDashboard,
@@ -16,12 +17,15 @@ import {
   ChevronDown,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
+import { useSocket } from '../../contexts/SocketContext';
+import { notificationService } from '../../services/services';
 import { cn } from '../../utils/format';
 import MagneticButton from '../ui/MagneticButton';
 import CurrencySelector from '../ui/CurrencySelector';
 
 export default function Navbar() {
   const { user, logout } = useAuth();
+  const { totalUnread, unreadNotifications, setUnreadNotifications } = useSocket() || {};
   const navigate = useNavigate();
   const location = useLocation();
   const [scrolled, setScrolled] = useState(false);
@@ -29,6 +33,8 @@ export default function Navbar() {
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [notifications, setNotifications] = useState([]);
 
   useEffect(() => {
     const handler = () => setScrolled(window.scrollY > 24);
@@ -54,6 +60,26 @@ export default function Navbar() {
   const handleLogout = async () => {
     await logout();
     navigate('/');
+  };
+
+  const loadNotifications = async () => {
+    try {
+      const res = await notificationService.list({ limit: 10 });
+      setNotifications(res.data.notifications || []);
+    } catch {}
+  };
+
+  const handleNotifClick = () => {
+    setNotifOpen((s) => !s);
+    if (!notifOpen) loadNotifications();
+  };
+
+  const handleMarkAllRead = async () => {
+    try {
+      await notificationService.markAllRead();
+      setUnreadNotifications(0);
+      setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+    } catch {}
   };
 
   const navLinks = [
@@ -169,9 +195,62 @@ export default function Navbar() {
                   <Heart className="h-5 w-5 text-slate-600 transition-colors group-hover:text-accent-500" />
                 </IconLink>
 
-                <IconLink to="/chat" label="Messages">
+                <IconLink to="/chat" label="Messages" badge={totalUnread}>
                   <MessageCircle className="h-5 w-5 text-slate-600 transition-colors group-hover:text-brand-600" />
                 </IconLink>
+
+                <div className="relative">
+                  <motion.button
+                    onClick={handleNotifClick}
+                    className="group relative hidden rounded-xl p-2 transition-colors hover:bg-white/70 sm:flex"
+                    whileTap={{ scale: 0.9 }}
+                    aria-label="Notifications"
+                  >
+                    <Bell className="h-5 w-5 text-slate-600 transition-colors group-hover:text-brand-600" />
+                    {unreadNotifications > 0 && (
+                      <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-brand-500 text-white text-[10px] font-bold grid place-items-center leading-none">
+                        {unreadNotifications > 99 ? '99+' : unreadNotifications}
+                      </span>
+                    )}
+                  </motion.button>
+                  <AnimatePresence>
+                    {notifOpen && (
+                      <motion.div
+                        initial={{ opacity: 0, y: -8, scale: 0.96 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: -8, scale: 0.96 }}
+                        transition={{ duration: 0.18 }}
+                        className="absolute right-0 mt-3 w-80 overflow-hidden rounded-2xl border border-slate-100 bg-white/95 shadow-2xl backdrop-blur-2xl z-50"
+                      >
+                        <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+                          <p className="text-sm font-semibold text-slate-900">Notifications</p>
+                          {unreadNotifications > 0 && (
+                            <button onClick={handleMarkAllRead} className="text-xs text-brand-600 hover:text-brand-700 font-medium">
+                              Mark all read
+                            </button>
+                          )}
+                        </div>
+                        <div className="max-h-80 overflow-y-auto">
+                          {notifications.length === 0 ? (
+                            <p className="px-4 py-6 text-center text-sm text-slate-400">No notifications yet</p>
+                          ) : (
+                            notifications.map((n) => (
+                              <div
+                                key={n._id}
+                                className={`px-4 py-3 border-b border-slate-50 text-sm ${n.read ? 'text-slate-500' : 'text-slate-900 bg-brand-50/30'}`}
+                              >
+                                {n.type === 'message' && 'New message received'}
+                                {n.type === 'offer' && 'New offer received'}
+                                {n.type === 'report_update' && 'Report status updated'}
+                                {n.type === 'admin_action' && 'Admin action taken'}
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
 
                 <div className="relative">
                   <motion.button
@@ -301,7 +380,7 @@ export default function Navbar() {
                     {[
                       { to: '/sell', icon: Plus, label: 'Sell Item' },
                       { to: '/favorites', icon: Heart, label: 'Favorites' },
-                      { to: '/chat', icon: MessageCircle, label: 'Messages' },
+                      { to: '/chat', icon: MessageCircle, label: 'Messages', badge: totalUnread },
                     ].map((item) => (
                       <Link
                         key={item.to}
@@ -309,7 +388,14 @@ export default function Navbar() {
                         onClick={() => setMenuOpen(false)}
                         className="flex items-center gap-3 rounded-xl px-4 py-3 font-medium text-slate-700 transition-colors hover:bg-slate-50"
                       >
-                        <item.icon className="h-5 w-5" />
+                        <div className="relative">
+                          <item.icon className="h-5 w-5" />
+                          {item.badge > 0 && (
+                            <span className="absolute -top-1.5 -right-1.5 min-w-[16px] h-4 px-0.5 rounded-full bg-brand-500 text-white text-[9px] font-bold grid place-items-center leading-none">
+                              {item.badge > 99 ? '99+' : item.badge}
+                            </span>
+                          )}
+                        </div>
                         {item.label}
                       </Link>
                     ))}
@@ -384,14 +470,19 @@ export default function Navbar() {
   );
 }
 
-function IconLink({ to, label, children }) {
+function IconLink({ to, label, children, badge }) {
   return (
     <Link
       to={to}
       aria-label={label}
-      className="group hidden rounded-xl p-2 transition-colors hover:bg-white/70 sm:flex"
+      className="group relative hidden rounded-xl p-2 transition-colors hover:bg-white/70 sm:flex"
     >
       {children}
+      {badge > 0 && (
+        <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-brand-500 text-white text-[10px] font-bold grid place-items-center leading-none">
+          {badge > 99 ? '99+' : badge}
+        </span>
+      )}
     </Link>
   );
 }

@@ -14,6 +14,7 @@ const {
 } = require('../controllers/productController');
 const { protect, optionalAuth } = require('../middleware/auth');
 const upload = require('../middleware/upload');
+const { productCreateLimiter } = require('../middleware/rateLimiters');
 const {
   createProductValidation,
   updateProductValidation,
@@ -32,7 +33,7 @@ router.post(
   upload.array('images', 8),
   uploadImages
 );
-router.post('/', protect, createProductValidation, createProduct);
+router.post('/', protect, productCreateLimiter, createProductValidation, createProduct);
 router.put('/:id', protect, updateProductValidation, updateProduct);
 router.delete('/:id', protect, deleteProduct);
 router.patch('/:id/sold', protect, markAsSold);

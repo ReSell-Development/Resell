@@ -1,5 +1,6 @@
 const User = require('../models/User');
-const { generateToken } = require('../utils/jwt');
+const { generateToken, generateRefreshToken, setTokenCookies, clearTokenCookies, verifyToken } = require('../utils/jwt');
+const { blacklistToken } = require('../utils/tokenBlacklist');
 const AppError = require('../utils/AppError');
 
 const register = async (req, res, next) => {
@@ -24,10 +25,13 @@ const register = async (req, res, next) => {
     });
 
     const token = generateToken({ id: user._id, role: user.role });
+    const refreshToken = generateRefreshToken({ id: user._id, role: user.role });
 
+    setTokenCookies(res, token, refreshToken);
+
+    user.password = undefined;
     res.status(201).json({
       success: true,
-      token,
       user,
     });
   } catch (err) {
@@ -44,7 +48,6 @@ const login = async (req, res, next) => {
 
     const normalizedEmail = email.toLowerCase().trim();
     const user = await User.findOne({ email: normalizedEmail }).select('+password');
-    console.log({ email: normalizedEmail, userFound: !!user, storedHash: user?.password });
     if (!user) {
       throw new AppError('Invalid credentials', 401, 'INVALID_CREDENTIALS');
     }
@@ -62,11 +65,13 @@ const login = async (req, res, next) => {
     await user.save();
 
     const token = generateToken({ id: user._id, role: user.role });
+    const refreshToken = generateRefreshToken({ id: user._id, role: user.role });
+
+    setTokenCookies(res, token, refreshToken);
 
     user.password = undefined;
     res.json({
       success: true,
-      token,
       user,
     });
   } catch (err) {
@@ -120,8 +125,55 @@ const changePassword = async (req, res, next) => {
 };
 
 const logout = async (req, res) => {
-  // JWT is stateless; client just drops the token
+  // Blacklist both access and refresh tokens so they can't be reused
+  const accessToken = req.cookies?.access_token;
+  const refreshToken = req.cookies?.refresh_token;
+
+  if (accessToken) {
+    try {
+      const decoded = verifyToken(accessToken);
+      blacklistToken(decoded.jti, decoded.exp * 1000);
+    } catch { /* token may already be expired — still blacklist by jti if possible */ }
+  }
+  if (refreshToken) {
+    try {
+      const decoded = verifyToken(refreshToken);
+      blacklistToken(decoded.jti, decoded.exp * 1000);
+    } catch { /* ignore */ }
+  }
+
+  clearTokenCookies(res);
   res.json({ success: true, message: 'Logged out successfully' });
+};
+
+const refreshAccessToken = async (req, res, next) => {
+  try {
+    const refreshToken = req.cookies?.refresh_token;
+    if (!refreshToken) {
+      throw new AppError('No refresh token', 401, 'UNAUTHORIZED');
+    }
+
+    let decoded;
+    try {
+      decoded = verifyToken(refreshToken);
+    } catch {
+      throw new AppError('Invalid or expired refresh token', 401, 'TOKEN_INVALID');
+    }
+
+    const user = await User.findById(decoded.id);
+    if (!user || !user.isActive) {
+      throw new AppError('User no longer exists or is inactive', 401, 'UNAUTHORIZED');
+    }
+
+    const newAccessToken = generateToken({ id: user._id, role: user.role });
+    const newRefreshToken = generateRefreshToken({ id: user._id, role: user.role });
+
+    setTokenCookies(res, newAccessToken, newRefreshToken);
+
+    res.json({ success: true, user: { _id: user._id, name: user.name, email: user.email, role: user.role } });
+  } catch (err) {
+    next(err);
+  }
 };
 
 module.exports = {
@@ -131,4 +183,5 @@ module.exports = {
   getMe,
   updateProfile,
   changePassword,
+  refreshAccessToken,
 };

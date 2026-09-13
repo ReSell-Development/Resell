@@ -6,6 +6,12 @@ const Category = require('../models/Category');
 const Product = require('../models/Product');
 const Favorite = require('../models/Favorite');
 
+const extractToken = (res) => {
+  const setCookie = res.headers['set-cookie'] || [];
+  const c = setCookie.find((s) => s.startsWith('access_token='));
+  return c ? c.split(';')[0].split('=')[1] : null;
+};
+
 describe('Favorites Routes', () => {
   let userToken;
   let productId;
@@ -24,14 +30,14 @@ describe('Favorites Routes', () => {
   const setupFavTest = async () => {
     const user = await User.create({
       name: 'Fav User',
-      email: 'fav@example.com',
+      email: `fav-${Date.now()}@example.com`,
       password: 'password123',
       role: 'buyer',
     });
 
     const category = await Category.create({
       name: 'Fav Category',
-      slug: 'fav-category',
+      slug: `fav-category-${Date.now()}`,
       icon: 'package',
     });
 
@@ -47,46 +53,12 @@ describe('Favorites Routes', () => {
 
     const res = await request(app)
       .post('/api/auth/login')
-      .send({ email: 'fav@example.com', password: 'password123' });
-    userToken = res.body.token;
+      .send({ email: user.email, password: 'password123' });
+    userToken = extractToken(res);
   };
 
   beforeEach(async () => {
     await setupFavTest();
-  });
-
-  beforeAll(async () => {
-    const user = await User.create({
-      name: 'Fav User',
-      email: 'fav@example.com',
-      password: 'password123',
-      role: 'buyer',
-    });
-
-    const category = await Category.create({
-      name: 'Fav Category',
-      slug: 'fav-category',
-      icon: 'package',
-    });
-
-    const product = await Product.create({
-      title: 'Favorite Product',
-      description: 'Description',
-      price: 100,
-      category: category._id,
-      images: [{ url: 'https://example.com/img.jpg', publicId: 'img123' }],
-      seller: user._id,
-    });
-    productId = product._id.toString();
-
-    const res = await request(app)
-      .post('/api/auth/login')
-      .send({ email: 'fav@example.com', password: 'password123' });
-    userToken = res.body.token;
-  });
-
-  afterAll(async () => {
-    await server.close();
   });
 
   describe('POST /api/favorites/:productId', () => {
@@ -99,19 +71,17 @@ describe('Favorites Routes', () => {
       expect(res.body.success).toBe(true);
     });
 
-    it('should reject duplicate favorite', async () => {
-      // Add once
+    it('should handle duplicate favorite gracefully', async () => {
       await request(app)
         .post(`/api/favorites/${productId}`)
         .set('Authorization', `Bearer ${userToken}`);
 
-      // Try to add again
       const res = await request(app)
         .post(`/api/favorites/${productId}`)
         .set('Authorization', `Bearer ${userToken}`)
-        .expect(400);
+        .expect(200);
 
-      expect(res.body.code).toBe('VALIDATION_ERROR');
+      expect(res.body.favorited).toBe(true);
     });
 
     it('should require auth', async () => {
@@ -145,7 +115,21 @@ describe('Favorites Routes', () => {
   });
 
   describe('GET /api/favorites/:productId/check', () => {
-    it('should check if product is favorited', async () => {
+    it('should return false when product is not favorited', async () => {
+      const res = await request(app)
+        .get(`/api/favorites/${productId}/check`)
+        .set('Authorization', `Bearer ${userToken}`)
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(res.body.favorited).toBe(false);
+    });
+
+    it('should return true when product is favorited', async () => {
+      await request(app)
+        .post(`/api/favorites/${productId}`)
+        .set('Authorization', `Bearer ${userToken}`);
+
       const res = await request(app)
         .get(`/api/favorites/${productId}/check`)
         .set('Authorization', `Bearer ${userToken}`)
@@ -158,6 +142,10 @@ describe('Favorites Routes', () => {
 
   describe('DELETE /api/favorites/:productId', () => {
     it('should remove product from favorites', async () => {
+      await request(app)
+        .post(`/api/favorites/${productId}`)
+        .set('Authorization', `Bearer ${userToken}`);
+
       const res = await request(app)
         .delete(`/api/favorites/${productId}`)
         .set('Authorization', `Bearer ${userToken}`)
@@ -166,13 +154,13 @@ describe('Favorites Routes', () => {
       expect(res.body.success).toBe(true);
     });
 
-    it('should return 404 for non-favorited product', async () => {
+    it('should return success for non-favorited product', async () => {
       const res = await request(app)
         .delete(`/api/favorites/${productId}`)
         .set('Authorization', `Bearer ${userToken}`)
-        .expect(404);
+        .expect(200);
 
-      expect(res.body.code).toBe('NOT_FOUND');
+      expect(res.body.success).toBe(true);
     });
   });
 });

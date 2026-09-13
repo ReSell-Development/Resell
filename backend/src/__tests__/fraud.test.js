@@ -5,8 +5,15 @@ const User = require('../models/User');
 const Category = require('../models/Category');
 const Product = require('../models/Product');
 
+const extractToken = (res) => {
+  const setCookie = res.headers['set-cookie'] || [];
+  const c = setCookie.find((s) => s.startsWith('access_token='));
+  return c ? c.split(';')[0].split('=')[1] : null;
+};
+
 describe('Fraud Detection', () => {
   let sellerToken;
+  let sellerUserId;
   let categoryId;
 
   afterAll(async () => {
@@ -23,51 +30,27 @@ describe('Fraud Detection', () => {
   const setupFraudTest = async () => {
     const seller = await User.create({
       name: 'Fraud Seller',
-      email: 'fraud@example.com',
+      email: `fraud-${Date.now()}@example.com`,
       password: 'password123',
       role: 'seller',
     });
+    sellerUserId = seller._id;
 
     const category = await Category.create({
-      name: 'Fraud Category',
-      slug: 'fraud-category',
+      name: `Fraud Category ${Date.now()}`,
+      slug: `fraud-category-${Date.now()}`,
       icon: 'package',
     });
     categoryId = category._id.toString();
 
     const res = await request(app)
       .post('/api/auth/login')
-      .send({ email: 'fraud@example.com', password: 'password123' });
-    sellerToken = res.body.token;
+      .send({ email: seller.email, password: 'password123' });
+    sellerToken = extractToken(res);
   };
 
   beforeEach(async () => {
     await setupFraudTest();
-  });
-
-  beforeAll(async () => {
-    const seller = await User.create({
-      name: 'Fraud Seller',
-      email: 'fraud@example.com',
-      password: 'password123',
-      role: 'seller',
-    });
-
-    const category = await Category.create({
-      name: 'Fraud Category',
-      slug: 'fraud-category',
-      icon: 'package',
-    });
-    categoryId = category._id.toString();
-
-    const res = await request(app)
-      .post('/api/auth/login')
-      .send({ email: 'fraud@example.com', password: 'password123' });
-    sellerToken = res.body.token;
-  });
-
-  afterAll(async () => {
-    await server.close();
   });
 
   describe('Duplicate image detection', () => {
@@ -80,9 +63,9 @@ describe('Fraud Detection', () => {
         category: categoryId,
         brand: 'TestBrand',
         condition: 'good',
-        images: [{ url: 'https://example.com/img1.jpg', publicId: 'img1', hash: 'duplicate-hash-123' }],
-        seller: (await User.findOne({ email: 'fraud@example.com' }))._id,
-        aiAnalysis: { imageHashes: ['duplicate-hash-123'] },
+        images: [{ url: 'https://example.com/img1.jpg', publicId: 'img1' }],
+        seller: sellerUserId,
+        aiAnalysis: { imageHashes: ['aabbccdd11223344'] },
       });
 
       // Create second product with same hash
@@ -96,7 +79,7 @@ describe('Fraud Detection', () => {
           category: categoryId,
           brand: 'TestBrand',
           condition: 'good',
-          images: [{ url: 'https://example.com/img2.jpg', publicId: 'img2', hash: 'duplicate-hash-123' }],
+          images: [{ url: 'https://example.com/img2.jpg', publicId: 'img2', hash: 'aabbccdd11223344' }],
           specifications: [],
         })
         .expect(201);
@@ -174,7 +157,7 @@ describe('Fraud Detection', () => {
 
       const res = await request(app)
         .post('/api/products')
-        .set('Authorization', `Bearer ${newTokenRes.body.token}`)
+        .set('Authorization', `Bearer ${extractToken(newTokenRes)}`)
         .send({
           title: 'Expensive Item',
           description: 'Description',

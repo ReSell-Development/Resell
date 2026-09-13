@@ -1,0 +1,259 @@
+// Tests for pure/deterministic service functions.
+// Uses table-driven test structure (it.each) for scalable edge case coverage.
+
+const mongoose = require('mongoose');
+const { server } = require('../server');
+const User = require('../models/User');
+const Product = require('../models/Product');
+const Category = require('../models/Category');
+const Review = require('../models/Review');
+const Sale = require('../models/Sale');
+const Report = require('../models/Report');
+
+// Services
+const { calculateTrustScore } = require('../services/trustScore');
+const { calculateRecommendedPrice } = require('../services/priceRecommendation');
+const { detectRisk } = require('../services/fraudDetection');
+const { convert, SUPPORTED, BASE } = require('../services/exchangeRates');
+const { hammingDistance, similarity } = require('../services/imageHash');
+const { findSimilar } = require('../services/similarProducts');
+const { assessCondition, detectDamage, classifyProduct } = require('../services/computerVision');
+
+describe('Service Unit Tests', () => {
+  afterAll(async () => {
+    await server.close();
+  });
+
+  afterEach(async () => {
+    const collections = mongoose.connection.collections;
+    for (const key in collections) {
+      await collections[key].deleteMany({});
+    }
+  });
+
+  // --- exchangeRates ---
+  describe('exchangeRates.convert', () => {
+    it.each([
+      [100, 'USD', 'EUR', 92, 'basic USD→EUR'],
+      [0, 'USD', 'EUR', 0, 'zero amount returns zero'],
+      [-5, 'USD', 'EUR', -5, 'negative amount returns as-is'],
+      [100, 'USD', 'USD', 100, 'same currency returns same'],
+      [100, 'XYZ', 'EUR', 92, 'unknown currency falls back to USD'],
+      [100, 'USD', 'XYZ', 100, 'unknown target falls back to USD base'],
+    ])('convert(%s, "%s", "%s") ≈ %s (%s)', (amount, from, to, expected, desc) => {
+      const rates = { USD: 1, EUR: 0.92, GBP: 0.79 };
+      const result = convert(amount, from, to, rates);
+      expect(result).toBeCloseTo(expected, 0);
+    });
+  });
+
+  // --- imageHash ---
+  describe('imageHash.hammingDistance', () => {
+    it.each([
+      ['0000000000000000', '0000000000000000', 0, 'identical hashes'],
+      ['0000000000000000', 'ffffffffffffffff', 64, 'opposite bits'],
+      ['0000000000000000', '0000000000000001', 1, 'one bit different'],
+      ['0000000000000000', null, 64, 'null hash'],
+      ['', '0000000000000000', 64, 'empty hash'],
+    ])('hammingDistance("%s", "%s") = %s (%s)', (h1, h2, expected, desc) => {
+      expect(hammingDistance(h1, h2)).toBe(expected);
+    });
+  });
+
+  describe('imageHash.similarity', () => {
+    it('returns 1.0 for identical hashes', () => {
+      expect(similarity('0000000000000000', '0000000000000000')).toBe(1);
+    });
+    it('returns 0.0 for opposite hashes', () => {
+      expect(similarity('0000000000000000', 'ffffffffffffffff')).toBe(0);
+    });
+  });
+
+  // --- priceRecommendation ---
+  describe('priceRecommendation.calculateRecommendedPrice', () => {
+    it('returns insufficient_data when no inputs', async () => {
+      const result = await calculateRecommendedPrice({
+        category: null, brand: null, model: null,
+        originalPrice: 0, yearsUsed: 0, condition: 'good',
+      });
+      expect(result.source).toBe('insufficient_data');
+      expect(result.recommendedPrice).toBe(0);
+    });
+
+    it('uses depreciation model when originalPrice provided', async () => {
+      const result = await calculateRecommendedPrice({
+        category: { name: 'Electronics' }, brand: 'Apple', model: 'iPhone',
+        originalPrice: 1000, yearsUsed: 1, condition: 'like-new',
+      });
+      expect(result.recommendedPrice).toBeGreaterThan(0);
+      expect(result.confidence).toBeGreaterThan(0.5);
+      expect(result.factors.length).toBeGreaterThan(0);
+    });
+
+    it('applies brand premium for Apple', async () => {
+      const withApple = await calculateRecommendedPrice({
+        category: { name: 'Electronics' }, brand: 'Apple',
+        originalPrice: 1000, yearsUsed: 1, condition: 'good',
+      });
+      const withoutBrand = await calculateRecommendedPrice({
+        category: { name: 'Electronics' }, brand: null,
+        originalPrice: 1000, yearsUsed: 1, condition: 'good',
+      });
+      expect(withApple.recommendedPrice).toBeGreaterThan(withoutBrand.recommendedPrice);
+    });
+
+    it('applies damage penalty', async () => {
+      const clean = await calculateRecommendedPrice({
+        category: { name: 'Electronics' }, originalPrice: 500,
+        yearsUsed: 0, condition: 'good', damageScore: 0,
+      });
+      const damaged = await calculateRecommendedPrice({
+        category: { name: 'Electronics' }, originalPrice: 500,
+        yearsUsed: 0, condition: 'good', damageScore: 80,
+      });
+      expect(damaged.recommendedPrice).toBeLessThan(clean.recommendedPrice);
+    });
+
+    it('uses comparables median when no originalPrice', async () => {
+      const comparables = [
+        { price: 100, condition: 'good' },
+        { price: 120, condition: 'good' },
+        { price: 90, condition: 'good' },
+        { price: 110, condition: 'good' },
+      ];
+      const result = await calculateRecommendedPrice({
+        category: null, originalPrice: 0, condition: 'good',
+        comparableListings: comparables,
+      });
+      expect(result.recommendedPrice).toBeGreaterThan(0);
+    });
+  });
+
+  // --- trustScore (requires DB) ---
+  describe('trustScore.calculateTrustScore', () => {
+    it('returns score 0 for non-existent user', async () => {
+      const result = await calculateTrustScore(new mongoose.Types.ObjectId());
+      expect(result.score).toBe(0);
+      expect(result.level).toBe('unknown');
+    });
+
+    it('returns positive score for user with history', async () => {
+      const user = await User.create({
+        name: 'Trust Test', email: 'trust@test.com', password: 'pass123',
+        role: 'seller', averageResponseMinutes: 30,
+      });
+      const category = await Category.create({ name: 'Test', slug: 'test-trust', icon: 'box' });
+      await Product.create({
+        title: 'Product 1', description: 'A'.repeat(150), price: 100,
+        category: category._id, images: [{ url: 'http://x.com/1.jpg', publicId: 'a' }],
+        seller: user._id,
+      });
+      await Sale.create({
+        product: category._id, seller: user._id, buyer: user._id,
+        salePrice: 100, netAmount: 100,
+      });
+      await Review.create({
+        seller: user._id, buyer: user._id, rating: 5,
+      });
+
+      const result = await calculateTrustScore(user._id);
+      expect(result.score).toBeGreaterThan(0);
+      expect(result.breakdown).toBeDefined();
+      expect(['new', 'developing', 'established', 'trusted', 'excellent']).toContain(result.level);
+    });
+  });
+
+  // --- fraudDetection (requires DB) ---
+  describe('fraudDetection.detectRisk', () => {
+    it('returns low risk for clean product', async () => {
+      const seller = await User.create({
+        name: 'Clean', email: 'clean@test.com', password: 'pass123',
+        role: 'seller', createdAt: new Date(Date.now() - 365 * 86400000),
+      });
+      const category = await Category.create({ name: 'Test', slug: 'test-fraud', icon: 'box' });
+      const product = await Product.create({
+        title: 'Clean Product', description: 'Unique description here',
+        price: 100, originalPrice: 200, category: category._id,
+        images: [{ url: 'http://x.com/1.jpg', publicId: 'a' }],
+        seller: seller._id,
+      });
+      const result = await detectRisk({
+        product, hashes: ['aaaa'], aiAnalysis: { damageScore: 10 },
+      });
+      expect(result.riskLevel).toBe('low');
+      expect(result.riskScore).toBeLessThan(25);
+    });
+
+    it('flags suspiciously low price', async () => {
+      const seller = await User.create({
+        name: 'Suspicious', email: 'susp@test.com', password: 'pass123',
+        role: 'seller', createdAt: new Date(Date.now() - 365 * 86400000),
+      });
+      const category = await Category.create({ name: 'Test', slug: 'test-fraud2', icon: 'box' });
+      const product = await Product.create({
+        title: 'Cheap Product', description: 'Unique description for fraud test',
+        price: 10, originalPrice: 200, category: category._id,
+        images: [{ url: 'http://x.com/1.jpg', publicId: 'a' }],
+        seller: seller._id,
+      });
+      const result = await detectRisk({
+        product, hashes: [], aiAnalysis: { damageScore: 0 },
+      });
+      expect(result.riskScore).toBeGreaterThanOrEqual(25);
+      expect(result.factors.some((f) => f.includes('low'))).toBe(true);
+    });
+
+    it('flags high-value listing from new account', async () => {
+      const seller = await User.create({
+        name: 'New Seller', email: 'new@test.com', password: 'pass123',
+        role: 'seller', createdAt: new Date(), // brand new
+      });
+      const category = await Category.create({ name: 'Test', slug: 'test-fraud3', icon: 'box' });
+      const product = await Product.create({
+        title: 'Expensive Product', description: 'Yet another unique description here',
+        price: 10000, originalPrice: 10000, category: category._id,
+        images: [{ url: 'http://x.com/1.jpg', publicId: 'a' }],
+        seller: seller._id,
+      });
+      const result = await detectRisk({
+        product, hashes: [], aiAnalysis: { damageScore: 0 },
+      });
+      expect(result.riskScore).toBeGreaterThanOrEqual(15);
+      expect(result.factors.some((f) => f.includes('new account'))).toBe(true);
+    });
+  });
+
+  // --- computerVision ---
+  describe('computerVision.assessCondition', () => {
+    it('returns default when sharp unavailable and buffer empty', async () => {
+      // With a minimal valid buffer
+      const buf = Buffer.alloc(100, 0x80);
+      const result = await assessCondition(buf);
+      expect(result).toHaveProperty('score');
+      expect(result).toHaveProperty('label');
+      expect(result.score).toBeGreaterThanOrEqual(30);
+      expect(result.score).toBeLessThanOrEqual(100);
+    });
+  });
+
+  describe('computerVision.classifyProduct', () => {
+    it('classifies electronics from title keywords', async () => {
+      const buf = Buffer.alloc(100, 0x80);
+      const result = await classifyProduct(buf, { title: 'iPhone 14 Pro' });
+      expect(result.category).toBe('Electronics');
+      expect(result.confidence).toBeGreaterThan(0);
+    });
+
+    it('classifies fashion from title keywords', async () => {
+      const buf = Buffer.alloc(100, 0x80);
+      const result = await classifyProduct(buf, { title: 'Nike Running Shoes' });
+      expect(result.category).toBe('Fashion');
+    });
+
+    it('returns Other for unmatched keywords', async () => {
+      const buf = Buffer.alloc(100, 0x80);
+      const result = await classifyProduct(buf, { title: 'xyzzy12345' });
+      expect(result.category).toBe('Other');
+    });
+  });
+});
