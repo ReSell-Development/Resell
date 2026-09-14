@@ -68,6 +68,18 @@ const waitFor = (emitter, event, timeout = 5000) =>
     });
   });
 
+// The server emits io.emit('user:status', ...) on every connection.
+// This broadcast can arrive at the same time as targeted relay events,
+// causing Socket.io 4.x client to drop once()-only listeners.
+// Drain these broadcasts before testing relay behavior.
+const drainStatus = (client) =>
+  new Promise((resolve) => {
+    let done = false;
+    const handler = () => { if (!done) { done = true; clearTimeout(timer); resolve(); } };
+    const timer = setTimeout(() => { if (!done) { done = true; resolve(); } }, 300);
+    client.once('user:status', handler);
+  });
+
 describe('WebRTC Socket Relay', () => {
   it('rejects connection without a token', (done) => {
     const client = Client(`http://localhost:${port}`, {
@@ -85,6 +97,8 @@ describe('WebRTC Socket Relay', () => {
   it('callUser relays incomingCall with correct caller name', async () => {
     const clientA = await connectClient(tokenA);
     const clientB = await connectClient(tokenB);
+    await drainStatus(clientA);
+    await drainStatus(clientB);
 
     const incoming = waitFor(clientB, 'incomingCall');
 
@@ -107,6 +121,8 @@ describe('WebRTC Socket Relay', () => {
   it('answerCall relays callAccepted back to caller', async () => {
     const clientA = await connectClient(tokenA);
     const clientB = await connectClient(tokenB);
+    await drainStatus(clientA);
+    await drainStatus(clientB);
 
     const incoming = waitFor(clientB, 'incomingCall');
     clientA.emit('callUser', {
@@ -134,6 +150,9 @@ describe('WebRTC Socket Relay', () => {
     const clientA = await connectClient(tokenA);
     const clientB = await connectClient(tokenB);
 
+    await drainStatus(clientA);
+    await drainStatus(clientB);
+
     const candidateFromB = waitFor(clientA, 'iceCandidate');
     clientB.emit('iceCandidate', {
       to: userA._id.toString(),
@@ -157,6 +176,8 @@ describe('WebRTC Socket Relay', () => {
   it('endCall relays callEnded', async () => {
     const clientA = await connectClient(tokenA);
     const clientB = await connectClient(tokenB);
+    await drainStatus(clientA);
+    await drainStatus(clientB);
 
     const ended = waitFor(clientB, 'callEnded');
     clientA.emit('endCall', { to: userB._id.toString() });
@@ -173,6 +194,9 @@ describe('WebRTC Socket Relay', () => {
     const charlie = await User.create({ name: 'Charlie', email: `charlie-${Date.now()}-${Math.random().toString(36).slice(2)}@test.com`, password: 'pass123' });
     const tokenC = jwt.sign({ id: charlie._id.toString() }, JWT_SECRET, { expiresIn: '1h' });
     const clientC = await connectClient(tokenC);
+    await drainStatus(clientA);
+    await drainStatus(clientB);
+    await drainStatus(clientC);
 
     let cReceived = false;
     clientC.on('incomingCall', () => {
