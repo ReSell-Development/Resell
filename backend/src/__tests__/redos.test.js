@@ -5,7 +5,8 @@
  *  1. Malicious regex-injection inputs are escaped and complete quickly
  *  2. Legitimate special characters in location/brand still match correctly
  *  3. minPrice=0 no longer silently ignores the filter (falsy-check bug)
- *  4. Empty/undefined price params fall through correctly
+ *  4. Empty string params are treated as absent (no filter), returning 200
+ *  5. Truly malformed values (e.g. minPrice=abc) still correctly return 400
  */
 
 const request = require('supertest');
@@ -247,19 +248,99 @@ describe('ReDoS fix + minPrice=0 (productController filters)', () => {
       expect(res.body.items.length).toBe(4);
     });
 
-    it('empty string minPrice causes validation error (400)', async () => {
+    it('empty string minPrice is treated as absent, returns all items', async () => {
       const res = await request(app)
         .get('/api/products')
         .query({ minPrice: '' })
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(res.body.items.length).toBe(4);
+    });
+
+    it('empty string maxPrice is treated as absent, returns all items', async () => {
+      const res = await request(app)
+        .get('/api/products')
+        .query({ maxPrice: '' })
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(res.body.items.length).toBe(4);
+    });
+
+    it('empty string category is treated as absent, returns all items', async () => {
+      const res = await request(app)
+        .get('/api/products')
+        .query({ category: '' })
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(res.body.items.length).toBe(4);
+    });
+
+    it('empty string condition is treated as absent, returns all items', async () => {
+      const res = await request(app)
+        .get('/api/products')
+        .query({ condition: '' })
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(res.body.items.length).toBe(4);
+    });
+  });
+
+  // ─── Truly malformed values still return 400 ───
+
+  describe('Truly malformed query params', () => {
+    it('non-numeric minPrice returns validation error', async () => {
+      const res = await request(app)
+        .get('/api/products')
+        .query({ minPrice: 'abc' })
         .expect(400);
 
       expect(res.body.code).toBe('VALIDATION_ERROR');
     });
 
-    it('empty string maxPrice causes validation error (400)', async () => {
+    it('non-numeric maxPrice returns validation error', async () => {
       const res = await request(app)
         .get('/api/products')
-        .query({ maxPrice: '' })
+        .query({ maxPrice: 'abc' })
+        .expect(400);
+
+      expect(res.body.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('invalid category ID returns validation error', async () => {
+      const res = await request(app)
+        .get('/api/products')
+        .query({ category: 'not-a-valid-id' })
+        .expect(400);
+
+      expect(res.body.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('invalid condition returns validation error', async () => {
+      const res = await request(app)
+        .get('/api/products')
+        .query({ condition: 'terrible' })
+        .expect(400);
+
+      expect(res.body.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('invalid sort option returns validation error', async () => {
+      const res = await request(app)
+        .get('/api/products')
+        .query({ sort: 'random' })
+        .expect(400);
+
+      expect(res.body.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('negative minPrice returns validation error', async () => {
+      const res = await request(app)
+        .get('/api/products')
+        .query({ minPrice: -5 })
         .expect(400);
 
       expect(res.body.code).toBe('VALIDATION_ERROR');

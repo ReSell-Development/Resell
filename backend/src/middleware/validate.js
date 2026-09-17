@@ -170,16 +170,16 @@ const favoriteValidation = [
 ];
 
 const productQueryValidation = [
-  query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
-  query('limit').optional().isInt({ min: 1, max: 50 }).withMessage('Limit must be between 1 and 50'),
-  query('sort').optional().isIn(['price-asc', 'price-desc', 'newest', 'oldest', 'popular']).withMessage('Invalid sort option'),
-  query('q').optional().isString().trim(),
-  query('category').optional().isMongoId().withMessage('Invalid category ID'),
-  query('brand').optional().isString().trim(),
-  query('condition').optional().isIn(['new', 'like-new', 'good', 'fair', 'poor']).withMessage('Invalid condition'),
-  query('minPrice').optional().isFloat({ min: 0 }).withMessage('Min price must be positive'),
-  query('maxPrice').optional().isFloat({ min: 0 }).withMessage('Max price must be positive'),
-  query('location').optional().isString().trim(),
+  query('page').optional({ checkFalsy: true }).isInt({ min: 1 }).withMessage('Page must be a positive integer'),
+  query('limit').optional({ checkFalsy: true }).isInt({ min: 1, max: 50 }).withMessage('Limit must be between 1 and 50'),
+  query('sort').optional({ checkFalsy: true }).isIn(['price-asc', 'price-desc', 'newest', 'oldest', 'popular']).withMessage('Invalid sort option'),
+  query('q').optional({ checkFalsy: true }).isString().trim(),
+  query('category').optional({ checkFalsy: true }).isMongoId().withMessage('Invalid category ID'),
+  query('brand').optional({ checkFalsy: true }).isString().trim(),
+  query('condition').optional({ checkFalsy: true }).isIn(['new', 'like-new', 'good', 'fair', 'poor']).withMessage('Invalid condition'),
+  query('minPrice').optional({ checkFalsy: true }).isFloat({ min: 0 }).withMessage('Min price must be positive'),
+  query('maxPrice').optional({ checkFalsy: true }).isFloat({ min: 0 }).withMessage('Max price must be positive'),
+  query('location').optional({ checkFalsy: true }).isString().trim(),
   handleValidation,
 ];
 

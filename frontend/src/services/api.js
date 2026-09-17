@@ -1,9 +1,7 @@
 import axios from 'axios';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
-
 const api = axios.create({
-  baseURL: `${API_URL}/api`,
+  baseURL: '/api',
   withCredentials: true,
 });
 
@@ -23,9 +21,7 @@ api.interceptors.response.use(
 
       originalRequest._retry = true;
       try {
-        await axios.post(`${API_URL}/api/auth/refresh`, null, {
-          withCredentials: true,
-        });
+        await api.post('/auth/refresh');
         // Retry the original request — the new access_token cookie is set
         return api(originalRequest);
       } catch {

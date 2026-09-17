@@ -55,10 +55,45 @@ export default function SellProduct() {
     location: { city: '', state: '', country: '' },
   });
   const [aiAnalysis, setAiAnalysis] = useState(null);
+  const [priceSuggestion, setPriceSuggestion] = useState(null);
+  const [categoryAutoFilled, setCategoryAutoFilled] = useState(false);
 
   useEffect(() => {
     categoryService.list().then((r) => setCategories(r.data.categories)).catch(() => {});
   }, []);
+
+  // Auto-fill category from image classification prediction
+  useEffect(() => {
+    if (aiAnalysis?.predictedCategory && categories.length > 0 && !categoryAutoFilled && !form.category) {
+      const predicted = categories.find(
+        (c) => c.name.toLowerCase() === aiAnalysis.predictedCategory.toLowerCase()
+      );
+      if (predicted && aiAnalysis.classificationConfidence >= 0.3) {
+        setForm((prev) => ({ ...prev, category: predicted._id }));
+        setCategoryAutoFilled(true);
+        toast.success(`Category auto-detected: ${predicted.name}`);
+      }
+    }
+  }, [aiAnalysis, categories, categoryAutoFilled, form.category]);
+
+  // Fetch price suggestion when category/condition/brand change
+  useEffect(() => {
+    if (!form.category || !form.condition) {
+      setPriceSuggestion(null);
+      return;
+    }
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      productService.suggestPrice({
+        category: form.category,
+        condition: form.condition,
+        brand: form.brand || undefined,
+        originalPrice: form.originalPrice || undefined,
+        yearsUsed: form.yearsUsed || undefined,
+      }).then((r) => setPriceSuggestion(r.data)).catch(() => {});
+    }, 500); // debounce 500ms
+    return () => { clearTimeout(timeoutId); controller.abort(); };
+  }, [form.category, form.condition, form.brand, form.originalPrice, form.yearsUsed]);
 
   const handleImageUpload = async (e) => {
     const files = Array.from(e.target.files || []);
@@ -87,7 +122,11 @@ export default function SellProduct() {
       }
       toast.success(`${data.images.length} image(s) analyzed`);
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Failed to upload images');
+      if (err.response?.status === 409) {
+        toast.error(err.response?.data?.message || 'This image is already used in another listing. Please use a different photo.');
+      } else {
+        toast.error(err.response?.data?.message || 'Failed to upload images');
+      }
     } finally {
       setUploading(false);
     }
@@ -349,10 +388,15 @@ export default function SellProduct() {
 
                     <div className="grid sm:grid-cols-2 gap-4">
                       <div>
-                        <label className="text-sm font-medium mb-1 block">Category</label>
+                        <label className="text-sm font-medium mb-1 block">
+                          Category
+                          {categoryAutoFilled && (
+                            <span className="ml-2 text-xs text-brand-500 font-normal">AI detected</span>
+                          )}
+                        </label>
                         <select
                           value={form.category}
-                          onChange={(e) => setForm({ ...form, category: e.target.value })}
+                          onChange={(e) => { setForm({ ...form, category: e.target.value }); setCategoryAutoFilled(false); }}
                           className="input"
                         >
                           <option value="">Select a category</option>
@@ -559,13 +603,51 @@ export default function SellProduct() {
                       />
                     </RevealOnScroll>
 
+                    {priceSuggestion && priceSuggestion.suggestedPrice > 0 && (
+                      <motion.div
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="mt-6 p-4 rounded-xl bg-white border border-slate-200"
+                      >
+                        <div className="flex items-center gap-2 mb-2">
+                          <DollarSign className="w-5 h-5 text-emerald-500" />
+                          <span className="font-semibold text-sm">Suggested Price</span>
+                        </div>
+                        <div className="text-2xl font-display font-extrabold gradient-text mb-1">
+                          {formatPrice(priceSuggestion.suggestedPrice)}
+                        </div>
+                        <div className="text-xs text-slate-500 mb-2">
+                          Range: {formatPrice(priceSuggestion.priceRange.min)} – {formatPrice(priceSuggestion.priceRange.max)}
+                        </div>
+                        <div className="text-xs text-slate-500">
+                          Suggested based on {priceSuggestion.comparableCount} comparable listing{priceSuggestion.comparableCount !== 1 ? 's' : ''}
+                          {priceSuggestion.confidence > 0 && ` · ${Math.round(priceSuggestion.confidence * 100)}% confidence`}
+                        </div>
+                        {priceSuggestion.factors?.length > 0 && (
+                          <div className="mt-2 text-xs text-slate-400">
+                            {priceSuggestion.factors.slice(0, 2).map((f, i) => (
+                              <div key={i}>· {f}</div>
+                            ))}
+                          </div>
+                        )}
+                      </motion.div>
+                    )}
+                    {priceSuggestion && priceSuggestion.suggestedPrice === 0 && (
+                      <motion.div
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="mt-6 p-4 rounded-xl bg-white border border-slate-200 text-sm text-slate-500"
+                      >
+                        Not enough data for a price suggestion yet. Add more details (category, original price) to get a recommendation.
+                      </motion.div>
+                    )}
+
                     <motion.p
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
                       className="mt-6 text-sm text-slate-600"
                     >
-                      💡 Our AI analyzed your images and detected visual signals. The recommended price
-                      will appear after publishing.
+                      💡 Our AI analyzed your images using a MobileNet image classification model and detected visual signals.
                     </motion.p>
                   </TiltCard>
                 </ScrollReveal>

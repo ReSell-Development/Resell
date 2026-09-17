@@ -11,6 +11,7 @@ const {
   getMyProducts,
   getBrands,
   getSimilarProducts,
+  suggestPrice,
 } = require('../controllers/productController');
 const { protect, optionalAuth } = require('../middleware/auth');
 const upload = require('../middleware/upload');
@@ -22,6 +23,7 @@ const {
 } = require('../middleware/validate');
 
 router.get('/', optionalAuth, productQueryValidation, getProducts);
+router.get('/suggest-price', optionalAuth, suggestPrice);
 router.get('/brands', getBrands);
 router.get('/mine', protect, getMyProducts);
 router.get('/:id', optionalAuth, getProduct);

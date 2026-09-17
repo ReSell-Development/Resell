@@ -213,76 +213,45 @@ const detectDamage = async (imageBuffer) => {
 };
 
 const classifyProduct = async (imageBuffer, metadata = {}) => {
-  // Heuristic-based classification using filename and image features
+  // Try real image-based classification via MobileNet first
+  try {
+    const { classifyImage, CONFIDENCE_THRESHOLD } = require('./imageClassifier');
+    const imageResult = await classifyImage(imageBuffer);
+
+    if (imageResult.source === 'mobilenet' && imageResult.confidence >= CONFIDENCE_THRESHOLD) {
+      return {
+        category: imageResult.category,
+        confidence: imageResult.confidence,
+        source: 'image-model',
+        topLabels: imageResult.topLabels,
+      };
+    }
+  } catch {
+    // Image classifier unavailable — fall through to keyword matching
+  }
+
+  // Fallback: keyword-based classification using filename + title
   const filename = (metadata.filename || '').toLowerCase();
   const title = (metadata.title || '').toLowerCase();
   const combined = `${filename} ${title}`;
 
   const CATEGORY_KEYWORDS = {
     Electronics: [
-      'phone',
-      'laptop',
-      'tablet',
-      'macbook',
-      'iphone',
-      'samsung',
-      'dell',
-      'hp',
-      'lenovo',
-      'computer',
-      'monitor',
-      'tv',
-      'television',
-      'camera',
-      'headphone',
-      'earbuds',
-      'airpods',
-      'console',
-      'playstation',
-      'xbox',
+      'phone', 'laptop', 'tablet', 'macbook', 'iphone', 'samsung', 'dell',
+      'hp', 'lenovo', 'computer', 'monitor', 'tv', 'television', 'camera',
+      'headphone', 'earbuds', 'airpods', 'console', 'playstation', 'xbox',
     ],
     Fashion: [
-      'shirt',
-      't-shirt',
-      'tshirt',
-      'jeans',
-      'jacket',
-      'coat',
-      'shoes',
-      'sneakers',
-      'dress',
-      'watch',
-      'bag',
-      'handbag',
-      'wallet',
-      'sunglasses',
-      'belt',
+      'shirt', 't-shirt', 'tshirt', 'jeans', 'jacket', 'coat', 'shoes',
+      'sneakers', 'dress', 'watch', 'bag', 'handbag', 'wallet', 'sunglasses', 'belt',
     ],
     'Home & Garden': [
-      'furniture',
-      'sofa',
-      'chair',
-      'table',
-      'lamp',
-      'plant',
-      'garden',
-      'kitchen',
-      'appliance',
-      'vacuum',
-      'bed',
-      'shelf',
+      'furniture', 'sofa', 'chair', 'table', 'lamp', 'plant', 'garden',
+      'kitchen', 'appliance', 'vacuum', 'bed', 'shelf',
     ],
     'Sports & Outdoors': [
-      'bike',
-      'bicycle',
-      'treadmill',
-      'weights',
-      'yoga',
-      'tennis',
-      'football',
-      'basketball',
-      'camping',
-      'hiking',
+      'bike', 'bicycle', 'treadmill', 'weights', 'yoga', 'tennis',
+      'football', 'basketball', 'camping', 'hiking',
     ],
     'Books & Media': ['book', 'novel', 'magazine', 'dvd', 'blu-ray', 'vinyl', 'record'],
     'Toys & Games': ['lego', 'puzzle', 'board game', 'console game', 'toy'],
@@ -310,6 +279,7 @@ const classifyProduct = async (imageBuffer, metadata = {}) => {
     category: bestCategory,
     confidence: Number(confidence.toFixed(2)),
     keywordsMatched: bestScore,
+    source: bestScore > 0 ? 'keyword' : 'none',
   };
 };
 

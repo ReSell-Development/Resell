@@ -1,0 +1,206 @@
+/**
+ * Tests for suggest-price endpoint and image classification.
+ *
+ * Covers:
+ *  1. GET /api/products/suggest-price — enough comparables
+ *  2. GET /api/products/suggest-price — cold-start (no comparables)
+ *  3. GET /api/products/suggest-price — condition affects price direction
+ *  4. classifyProduct — keyword fallback still works
+ *  5. classifyProduct — returns source field
+ *  6. Image classifier — IMAGENET_TO_CATEGORY mapping
+ */
+
+const request = require('supertest');
+const mongoose = require('mongoose');
+const { app, server } = require('../server');
+const User = require('../models/User');
+const Category = require('../models/Category');
+const Product = require('../models/Product');
+const { classifyProduct } = require('../services/computerVision');
+const { IMAGENET_TO_CATEGORY, CONFIDENCE_THRESHOLD } = require('../services/imageClassifier');
+
+const extractToken = (res) => {
+  const setCookie = res.headers['set-cookie'] || [];
+  const c = setCookie.find((s) => s.startsWith('access_token='));
+  return c ? c.split(';')[0].split('=')[1] : null;
+};
+
+describe('Price Suggestion & Image Classification', () => {
+  let seller, token, category;
+
+  afterAll(async () => {
+    await server.close();
+  });
+
+  afterEach(async () => {
+    const collections = mongoose.connection.collections;
+    for (const key in collections) {
+      await collections[key].deleteMany({});
+    }
+  });
+
+  beforeEach(async () => {
+    seller = await User.create({
+      name: 'Price Test Seller',
+      email: `price-${Date.now()}@example.com`,
+      password: 'password123',
+      role: 'seller',
+      createdAt: new Date(Date.now() - 365 * 86400000),
+    });
+
+    const loginRes = await request(app)
+      .post('/api/auth/login')
+      .send({ email: seller.email, password: 'password123' });
+    token = extractToken(loginRes);
+
+    category = await Category.create({
+      name: 'Electronics',
+      slug: `electronics-${Date.now()}`,
+      icon: 'smartphone',
+    });
+  });
+
+  // ─── 1. Suggest price with enough comparables ───
+
+  describe('GET /api/products/suggest-price', () => {
+    it('returns a price suggestion when enough comparables exist', async () => {
+      // Create comparable sold products
+      for (let i = 0; i < 5; i++) {
+        await Product.create({
+          title: `Comparable ${i}`,
+          description: `Comparable product ${i}`,
+          price: 100 + i * 20,
+          originalPrice: 200,
+          category: category._id,
+          images: [{ url: `http://x.com/${i}.jpg`, publicId: `img${i}` }],
+          seller: seller._id,
+          status: 'sold',
+          condition: 'good',
+        });
+      }
+
+      const res = await request(app)
+        .get('/api/products/suggest-price')
+        .query({ category: category._id, condition: 'good' })
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(res.body.suggestedPrice).toBeGreaterThan(0);
+      expect(res.body.priceRange.min).toBeLessThan(res.body.suggestedPrice);
+      expect(res.body.priceRange.max).toBeGreaterThan(res.body.suggestedPrice);
+      expect(res.body.comparableCount).toBeGreaterThanOrEqual(5);
+      expect(typeof res.body.explanation).toBe('string');
+    });
+
+    // ─── 2. Cold-start: no comparables ───
+
+    it('returns insufficient data when no comparables and no original price', async () => {
+      const res = await request(app)
+        .get('/api/products/suggest-price')
+        .query({ category: category._id, condition: 'good' })
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(res.body.suggestedPrice).toBe(0);
+      expect(res.body.comparableCount).toBe(0);
+    });
+
+    // ─── 3. Condition affects price direction ───
+
+    it('returns higher price for better condition', async () => {
+      // Create comparables
+      for (let i = 0; i < 4; i++) {
+        await Product.create({
+          title: `Item ${i}`,
+          description: `Test item ${i}`,
+          price: 150,
+          originalPrice: 300,
+          category: category._id,
+          images: [{ url: `http://x.com/${i}.jpg`, publicId: `img${i}` }],
+          seller: seller._id,
+          condition: 'good',
+        });
+      }
+
+      const likeNew = await request(app)
+        .get('/api/products/suggest-price')
+        .query({ category: category._id, condition: 'like-new', originalPrice: 300 })
+        .expect(200);
+
+      const fair = await request(app)
+        .get('/api/products/suggest-price')
+        .query({ category: category._id, condition: 'fair', originalPrice: 300 })
+        .expect(200);
+
+      expect(likeNew.body.suggestedPrice).toBeGreaterThan(fair.body.suggestedPrice);
+    });
+
+    // ─── 4. Original price drives depreciation model ───
+
+    it('uses depreciation model when originalPrice is provided', async () => {
+      const res = await request(app)
+        .get('/api/products/suggest-price')
+        .query({ category: category._id, condition: 'good', originalPrice: 1000, yearsUsed: 1 })
+        .expect(200);
+
+      expect(res.body.suggestedPrice).toBeGreaterThan(0);
+      expect(res.body.suggestedPrice).toBeLessThan(1000); // depreciated
+    });
+  });
+
+  // ─── 5. classifyProduct keyword fallback ───
+
+  describe('computerVision.classifyProduct', () => {
+    it('classifies electronics from title keywords', async () => {
+      const buf = Buffer.alloc(100, 0x80);
+      const result = await classifyProduct(buf, { title: 'iPhone 14 Pro' });
+      expect(result.category).toBe('Electronics');
+      expect(result.confidence).toBeGreaterThan(0);
+      expect(result.source).toBeDefined();
+    });
+
+    it('classifies fashion from title keywords', async () => {
+      const buf = Buffer.alloc(100, 0x80);
+      const result = await classifyProduct(buf, { title: 'Nike Running Shoes' });
+      expect(result.category).toBe('Fashion');
+    });
+
+    it('returns Other for unmatched keywords', async () => {
+      const buf = Buffer.alloc(100, 0x80);
+      const result = await classifyProduct(buf, { title: 'xyzzy12345' });
+      expect(result.category).toBe('Other');
+    });
+
+    it('returns a source field indicating classification method', async () => {
+      const buf = Buffer.alloc(100, 0x80);
+      const result = await classifyProduct(buf, { title: 'MacBook Pro' });
+      expect(result.source).toBeDefined();
+      expect(['image-model', 'keyword', 'none']).toContain(result.source);
+    });
+  });
+
+  // ─── 6. Image classifier mapping ───
+
+  describe('imageClassifier', () => {
+    it('has IMAGENET_TO_CATEGORY mapping', () => {
+      expect(IMAGENET_TO_CATEGORY).toBeDefined();
+      expect(typeof IMAGENET_TO_CATEGORY).toBe('object');
+      expect(Object.keys(IMAGENET_TO_CATEGORY).length).toBeGreaterThan(10);
+    });
+
+    it('maps common ImageNet labels to ReSell categories', () => {
+      expect(IMAGENET_TO_CATEGORY['cellular telephone']).toBe('Electronics');
+      expect(IMAGENET_TO_CATEGORY['shoe']).toBe('Fashion');
+      expect(IMAGENET_TO_CATEGORY['sofa']).toBe('Home & Garden');
+      expect(IMAGENET_TO_CATEGORY['bicycle']).toBe('Sports & Outdoors');
+      expect(IMAGENET_TO_CATEGORY['book']).toBe('Books & Media');
+      expect(IMAGENET_TO_CATEGORY['toy']).toBe('Toys & Games');
+    });
+
+    it('has a defined CONFIDENCE_THRESHOLD', () => {
+      expect(typeof CONFIDENCE_THRESHOLD).toBe('number');
+      expect(CONFIDENCE_THRESHOLD).toBeGreaterThan(0);
+      expect(CONFIDENCE_THRESHOLD).toBeLessThan(1);
+    });
+  });
+});

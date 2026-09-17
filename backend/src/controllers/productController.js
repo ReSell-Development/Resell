@@ -3,7 +3,7 @@ const Category = require('../models/Category');
 const User = require('../models/User');
 const AppError = require('../utils/AppError');
 const { uploadToCloudinary, deleteFromCloudinary } = require('../config/cloudinary');
-const { perceptualHashFromBuffer } = require('../services/imageHash');
+const { perceptualHashFromBuffer, hammingDistance } = require('../services/imageHash');
 const computerVision = require('../services/computerVision');
 const { calculateRecommendedPrice } = require('../services/priceRecommendation');
 const { detectRisk } = require('../services/fraudDetection');
@@ -124,17 +124,68 @@ const getProduct = async (req, res, next) => {
   }
 };
 
+// Maximum hamming distance for 64-bit pHash to consider two images as duplicates.
+// Distance 0-8: very likely duplicate (crop/recompress variants).
+// Distance 9-12: possibly similar (captured to be safe).
+// Distance 13+: genuinely different images.
+// Threshold of 12 matches fraudDetection.js HASH_SIMILARITY_THRESHOLD and is
+// validated against real photographs with a margin of 18 points to the next
+// same-category different-product minimum distance (30).
+const DUPLICATE_HASH_THRESHOLD = 12;
+
 const uploadImages = async (req, res, next) => {
   try {
     if (!req.files || req.files.length === 0) {
       throw new AppError('No images provided', 400, 'NO_FILES');
     }
 
+    // Phase 1: Compute perceptual hashes for ALL incoming images before any
+    // Cloudinary upload. This ensures we can reject duplicates without leaving
+    // orphaned files on Cloudinary.
+    const fileHashes = [];
+    for (const file of req.files) {
+      const hash = await perceptualHashFromBuffer(file.buffer);
+      fileHashes.push({ file, hash });
+    }
+
+    // Phase 2: Check each hash against existing active/sold products.
+    // Scoped to same category when available, otherwise global.
+    // Limit to 500 candidates for performance.
+    for (const { hash } of fileHashes) {
+      const candidateFilter = {
+        status: { $in: ['active', 'sold'] },
+        'aiAnalysis.imageHashes': { $exists: true, $ne: [] },
+      };
+      if (req.body.category) {
+        candidateFilter.category = req.body.category;
+      }
+
+      const candidates = await Product.find(candidateFilter)
+        .select('title seller aiAnalysis.imageHashes')
+        .limit(500);
+
+      for (const candidate of candidates) {
+        const candidateHashes = candidate.aiAnalysis?.imageHashes || [];
+        for (const candidateHash of candidateHashes) {
+          const distance = hammingDistance(hash, candidateHash);
+          if (distance <= DUPLICATE_HASH_THRESHOLD) {
+            const similarityPct = Math.round((1 - distance / 64) * 100);
+            throw new AppError(
+              `Duplicate image detected (~${similarityPct}% similar to existing listing "${candidate.title}"). This image is already used in another listing.`,
+              409,
+              'DUPLICATE_IMAGE'
+            );
+          }
+        }
+      }
+    }
+
+    // Phase 3: All hashes are unique — proceed with Cloudinary upload + CV analysis.
     const results = [];
     for (const file of req.files) {
       try {
         const uploaded = await uploadToCloudinary(file.buffer, 'resell/products');
-        const hash = await perceptualHashFromBuffer(file.buffer);
+        const hash = fileHashes.find((fh) => fh.file === file)?.hash;
 
         // CV analysis
         const [condition, damage, classification] = await Promise.all([
@@ -161,7 +212,6 @@ const uploadImages = async (req, res, next) => {
         });
       } catch (err) {
         console.error('[Upload] Image processing error:', err.message);
-        // Still include the upload with minimal info
       }
     }
 
@@ -485,6 +535,43 @@ const getSimilarProducts = async (req, res, next) => {
   }
 };
 
+const suggestPrice = async (req, res, next) => {
+  try {
+    const { category, condition, brand, originalPrice, yearsUsed } = req.query;
+
+    // Build comparable listings query — active + sold in the same category
+    const comparableFilter = { status: { $in: ['active', 'sold'] } };
+    if (category) comparableFilter.category = category;
+
+    const comparables = await Product.find(comparableFilter)
+      .select('price condition brand originalPrice yearsUsed createdAt')
+      .sort({ createdAt: -1 })
+      .limit(100);
+
+    const result = await calculateRecommendedPrice({
+      category,
+      brand: brand || undefined,
+      originalPrice: Number(originalPrice) || 0,
+      yearsUsed: Number(yearsUsed) || 0,
+      condition: condition || 'good',
+      comparableListings: comparables,
+    });
+
+    res.json({
+      success: true,
+      suggestedPrice: result.recommendedPrice,
+      priceRange: { min: result.minPrice, max: result.maxPrice },
+      confidence: result.confidence,
+      comparableCount: comparables.length,
+      explanation: result.explanation,
+      factors: result.factors,
+      source: result.source,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
 module.exports = {
   getProducts,
   getProduct,
@@ -496,4 +583,5 @@ module.exports = {
   getMyProducts,
   getBrands,
   getSimilarProducts,
+  suggestPrice,
 };
