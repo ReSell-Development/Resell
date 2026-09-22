@@ -48,19 +48,21 @@ const setTokenCookies = (res, accessToken, refreshToken) => {
   });
 
   if (refreshToken) {
-    res.cookie('refresh_token', refreshToken, {
+    // Set refresh token cookie on root path so it is sent with /api/auth/refresh requests.
+  // Using '/' broadens scope but simplifies token refresh flow.
+  res.cookie('refresh_token', refreshToken, {
       httpOnly: true,
       secure: isProduction,
       sameSite,
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-      path: '/api/auth',
+      path: '/',
     });
   }
 };
 
 const clearTokenCookies = (res) => {
   res.clearCookie('access_token', { path: '/' });
-  res.clearCookie('refresh_token', { path: '/api/auth' });
+  res.clearCookie('refresh_token', { path: '/' }); // must match the path set in setTokenCookies
 };
 
 module.exports = {

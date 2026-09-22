@@ -3,7 +3,8 @@ import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Package, ChevronRight, Clock, CheckCircle, Truck, XCircle } from 'lucide-react';
 import { orderService } from '../services/services';
-import { formatPrice, formatDate } from '../utils/format';
+import { formatDate } from '../utils/format';
+import useFormatPrice from '../hooks/useFormatPrice';
 import PageTransition from '../components/layout/PageTransition';
 import Loader from '../components/ui/Loader';
 
@@ -19,6 +20,7 @@ const STATUS_CONFIG = {
 };
 
 export default function Orders() {
+  const formatPrice = useFormatPrice('USD');
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
 

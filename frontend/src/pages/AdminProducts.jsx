@@ -6,9 +6,11 @@ import toast from 'react-hot-toast';
 import { adminService } from '../services/services';
 import AdminLayout from '../components/admin/AdminLayout';
 import Loader from '../components/ui/Loader';
-import { formatPrice, formatDate } from '../utils/format';
+import { formatDate } from '../utils/format';
+import useFormatPrice from '../hooks/useFormatPrice';
 
 export default function AdminProducts() {
+  const formatPrice = useFormatPrice('USD');
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');

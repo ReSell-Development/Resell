@@ -7,10 +7,11 @@ import { AuthProvider } from './contexts/AuthContext.jsx';
 import { SocketProvider } from './contexts/SocketContext.jsx';
 import { CurrencyProvider } from './contexts/CurrencyContext.jsx';
 import './styles/index.css';
+import './styles/responsive-design.scss';
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <BrowserRouter>
+    <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <AuthProvider>
         <CurrencyProvider>
           <SocketProvider>

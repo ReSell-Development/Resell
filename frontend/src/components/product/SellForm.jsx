@@ -1,8 +1,13 @@
 import { useState } from 'react';
 import { Plus, X } from 'lucide-react';
-import { formatPrice, getConditionLabel } from '../../utils/format';
+import { getConditionLabel } from '../../utils/format';
+import { useCurrency } from '../../contexts/CurrencyContext';
+import { SUPPORTED_CURRENCIES } from '../../utils/currency';
 
 export default function SellForm({ initial = {}, categories = [], onSubmit, submitting, submitLabel = 'Publish Listing' }) {
+  const { currency } = useCurrency();
+  const currencySymbol = SUPPORTED_CURRENCIES.find((c) => c.code === currency)?.symbol || '$';
+  
   const [form, setForm] = useState({
     title: initial.title || '',
     description: initial.description || '',
@@ -45,6 +50,7 @@ export default function SellForm({ initial = {}, categories = [], onSubmit, subm
       yearsUsed: Number(form.yearsUsed) || 0,
       specifications: form.specifications.filter((s) => s.key && s.value),
       images: initial.images, // keep existing
+      currencyCode: currency,
     });
   };
 
@@ -127,7 +133,7 @@ export default function SellForm({ initial = {}, categories = [], onSubmit, subm
 
         <div className="grid sm:grid-cols-3 gap-4">
           <div>
-            <label className="text-sm font-medium mb-1 block">Price</label>
+            <label className="text-sm font-medium mb-1 block">Price ({currencySymbol})</label>
             <input
               type="number"
               value={form.price}
@@ -137,7 +143,7 @@ export default function SellForm({ initial = {}, categories = [], onSubmit, subm
             />
           </div>
           <div>
-            <label className="text-sm font-medium mb-1 block">Original Price</label>
+            <label className="text-sm font-medium mb-1 block">Original Price ({currencySymbol})</label>
             <input
               type="number"
               value={form.originalPrice}

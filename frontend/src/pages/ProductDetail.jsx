@@ -26,6 +26,7 @@ import SellerInfo from '../components/product/SellerInfo';
 import ProductCard from '../components/product/ProductCard';
 import DeliveryAddressForm from '../components/checkout/DeliveryAddressForm';
 import Price from '../components/ui/Price';
+import useFormatPrice from '../hooks/useFormatPrice';
 import PageTransition from '../components/layout/PageTransition';
 import Loader from '../components/ui/Loader';
 import ErrorState from '../components/ui/ErrorState';
@@ -546,8 +547,7 @@ function OfferModal({ product, onClose, onSubmit }) {
     onSubmit({ amount: value, message });
   };
 
-  const formatPrice = (n) =>
-    new Intl.NumberFormat('en-US', { style: 'currency', currency: product.currencyCode || 'USD', maximumFractionDigits: 0 }).format(n);
+  const formatPrice = useFormatPrice(product?.currencyCode || 'USD');
 
   return (
     <div

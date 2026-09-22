@@ -1,8 +1,11 @@
 import { motion } from 'framer-motion';
 import { TrendingUp, Shield, AlertTriangle, Sparkles, Check } from 'lucide-react';
-import { formatPrice, getRiskColor, cn } from '../../utils/format';
+import { getRiskColor, cn } from '../../utils/format';
+import useFormatPrice from '../../hooks/useFormatPrice';
 
 export default function AIAnalysisPanel({ aiAnalysis }) {
+  const formatPrice = useFormatPrice('USD');
+
   if (!aiAnalysis) return null;
   const rec = aiAnalysis.priceRecommendation;
   const risk = aiAnalysis.riskAssessment;

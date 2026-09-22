@@ -239,10 +239,39 @@ const markRead = async (req, res, next) => {
   }
 };
 
+const getUnreadCount = async (req, res, next) => {
+  try {
+    const userId = req.user._id;
+    const userKey = toKey(userId);
+    const conversations = await Conversation.find({ participants: userId })
+      .select('unreadCounts')
+      .lean();
+    let count = 0;
+    const breakdown = {};
+    for (const c of conversations) {
+      let n = 0;
+      if (c.unreadCounts instanceof Map) {
+        n = c.unreadCounts.get(userKey) || 0;
+      } else if (c.unreadCounts && typeof c.unreadCounts === 'object') {
+        // Lean returns plain object when Map serialized
+        n = c.unreadCounts[userKey] || c.unreadCounts.get?.(userKey) || 0;
+      }
+      if (n > 0) {
+        breakdown[c._id] = n;
+        count += n;
+      }
+    }
+    res.json({ success: true, count, breakdown });
+  } catch (err) {
+    next(err);
+  }
+};
+
 module.exports = {
   getOrCreateConversation,
   getConversations,
   getMessages,
   sendMessage,
   markRead,
+  getUnreadCount,
 };

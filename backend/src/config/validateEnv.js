@@ -14,6 +14,12 @@ const OPTIONAL_WITH_DEFAULTS = {
   NODE_ENV: 'development',
   JWT_EXPIRE: '7d',
   REDIS_URL: 'redis://localhost:6379',
+  ML_SERVICE_URL: 'http://localhost:8000',
+  HASH_THRESHOLD: '8',
+  CNN_SIMILARITY_THRESHOLD: '0.75',
+  SIFT_THRESHOLD: '0.3',
+  DUPLICATE_CHECK_TIMEOUT: '10000',
+  MAX_IMAGE_SIZE: '5242880',
 };
 
 const validateEnv = () => {

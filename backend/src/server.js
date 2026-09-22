@@ -134,11 +134,13 @@ const exchangeRoutes = require('./routes/exchangeRoutes');
 const offerRoutes = require('./routes/offerRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
 const orderRoutes = require('./routes/orderRoutes');
+const listingRoutes = require('./routes/listings');
 const { startScheduler: startExchangeScheduler } = require('./services/exchangeRates');
 const { registerSweepJob } = require('./queues');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/products', productRoutes);
+app.use('/api/listings', listingRoutes);
 app.use('/api/categories', categoryRoutes);
 app.use('/api/favorites', favoriteRoutes);
 app.use('/api/chat', chatRoutes);
@@ -169,6 +171,11 @@ if (require.main === module) {
       server.listen(PORT, () => {
         console.log(`[Server] Running on port ${PORT} [${process.env.NODE_ENV || 'development'}]`);
         registerSweepJob();
+        // Warm MobileNet in background to avoid 18s cold start on first upload
+        if (process.env.NODE_ENV !== 'test') {
+          const { loadModel } = require('./services/imageClassifier');
+          loadModel().then(() => console.log('[Server] MobileNet warmed')).catch(() => {});
+        }
       });
     } catch (err) {
       console.error('[Server] Startup failed:', err);
@@ -209,3 +216,5 @@ process.on('SIGTERM', () => gracefulShutdown(0));
 process.on('SIGINT', () => gracefulShutdown(0));
 
 module.exports = { app, server, io };
+
+

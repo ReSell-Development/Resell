@@ -20,8 +20,17 @@ const errorHandler = (err, req, res, next) => {
     error = new AppError(messages.join(', '), 400, 'VALIDATION_ERROR');
   }
 
+  // Logging: expected operational 4xx errors (e.g. anonymous 401 auth checks)
+  // get a concise one-line log — no noisy stack trace. Unexpected errors and
+  // 5xx failures still get the full error with stack for diagnosis.
   if (process.env.NODE_ENV === 'development') {
-    console.error('[Error]', err);
+    if (error.isOperational && error.statusCode < 500) {
+      console.log(
+        `[${error.statusCode}] ${error.code}: ${error.message} — ${req.method} ${req.originalUrl}`
+      );
+    } else {
+      console.error('[Error]', error);
+    }
   }
 
   res.status(error.statusCode).json({

@@ -27,6 +27,8 @@ const CallModal = forwardRef(function CallModal(_, ref) {
   const peerAudio = useRef();
   const connectionRef = useRef();
   const streamRef = useRef();
+  const pendingSignalRef = useRef(null);
+  const pendingCallerRef = useRef(null);
 
   const cleanup = () => {
     if (connectionRef.current) {
@@ -37,6 +39,8 @@ const CallModal = forwardRef(function CallModal(_, ref) {
       streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
     }
+    pendingSignalRef.current = null;
+    pendingCallerRef.current = null;
     setReceivingCall(false);
     setCallAccepted(false);
     setCallEnded(false);
@@ -58,10 +62,11 @@ const CallModal = forwardRef(function CallModal(_, ref) {
     if (!socket) return;
 
     const handleIncoming = (data) => {
+      pendingSignalRef.current = data.signal;
+      pendingCallerRef.current = data.from;
       setReceivingCall(true);
       setCallerName(data.callerName);
       setActiveCallTo(data.from);
-      connectionRef.current._pendingSignal = data.signal;
     };
 
     const handleAccepted = (data) => {
@@ -169,7 +174,7 @@ const CallModal = forwardRef(function CallModal(_, ref) {
   }));
 
   const answerCall = async () => {
-    const signal = connectionRef.current?._pendingSignal;
+    const signal = pendingSignalRef.current;
     if (!signal) return;
 
     setCallAccepted(true);

@@ -5,7 +5,7 @@ import { ShieldCheck, Star, Calendar, MapPin, MessageCircle, Loader2 } from 'luc
 import toast from 'react-hot-toast';
 import { sellerService, chatService } from '../services/services';
 import { useAuth } from '../contexts/AuthContext';
-import { formatDate, getConditionLabel, formatPrice, getTrustColor } from '../utils/format';
+import { formatDate, getConditionLabel, getTrustColor } from '../utils/format';
 import TrustBadge from '../components/ui/TrustBadge';
 import ProductCard from '../components/product/ProductCard';
 import PageTransition from '../components/layout/PageTransition';

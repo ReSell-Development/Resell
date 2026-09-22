@@ -1,20 +1,37 @@
-FROM node:20-alpine
+# Backend Dockerfile
+FROM node:18-alpine
 
 WORKDIR /app
 
-RUN apk add --no-cache python3 make g++ vips-dev
+# Install system dependencies
+RUN apk add --no-cache \
+    python3 \
+    make \
+    g++ \
+    vips-dev
 
+# Copy package files
 COPY package*.json ./
 
+# Install dependencies
 RUN npm ci --only=production
 
-COPY . .
+# Copy source code
+COPY src ./src
+COPY .env.example .env.example
 
-EXPOSE 5000
+# Create non-root user
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S nodejs -u 1001 -G nodejs && \
+    chown -R nodejs:nodejs /app
+USER nodejs
 
-ENV NODE_ENV=production
+# Expose port
+EXPOSE 3000
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:5000/health || exit 1
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
 
-CMD ["node", "src/server.js"]
+# Start application
+CMD ["npm", "start"]

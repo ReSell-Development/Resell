@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -23,7 +23,11 @@ import { formatPrice, getConditionLabel, cn } from '../utils/format';
 import PageTransition from '../components/layout/PageTransition';
 import { TiltCard } from '../components/ui/TiltCard';
 import MagneticButton from '../components/ui/MagneticButton';
-import { ScrollReveal } from '../components/ui/ScrollReveal';
+import { ScrollReveal, RevealOnScroll } from '../components/ui/ScrollReveal';
+import { useCurrency } from '../contexts/CurrencyContext';
+import { SUPPORTED_CURRENCIES, convertPrice } from '../utils/currency';
+import LocationDetectButton from '../components/ui/LocationDetectButton';
+import useLocationDetector from '../hooks/useLocationDetector';
 
 const STEPS = [
   { id: 'photos', label: 'Photos', icon: Image },
@@ -31,6 +35,23 @@ const STEPS = [
   { id: 'ai', label: 'AI Analysis', icon: Sparkles },
   { id: 'review', label: 'Review', icon: Check },
 ];
+
+const toNumber = (value) => {
+  if (value === '' || value === null || value === undefined) return NaN;
+  const trimmed = String(value).trim();
+  if (trimmed === '') return NaN;
+  const n = Number(trimmed);
+  return Number.isFinite(n) ? n : NaN;
+};
+
+const toInt = (value) => {
+  if (value === '' || value === null || value === undefined) return 0;
+  const trimmed = String(value).trim();
+  if (trimmed === '') return 0;
+  // parseInt handles "02" -> 2 correctly
+  const n = parseInt(trimmed, 10);
+  return Number.isFinite(n) ? n : NaN;
+};
 
 export default function SellProduct() {
   const navigate = useNavigate();
@@ -41,6 +62,10 @@ export default function SellProduct() {
   const [aiLoading, setAiLoading] = useState(false);
   const [images, setImages] = useState([]);
   const [uploading, setUploading] = useState(false);
+  const { rates } = useCurrency();
+  const [selectedCurrency, setSelectedCurrency] = useState('INR');
+  const locationDetector = useLocationDetector();
+
   const [form, setForm] = useState({
     title: '',
     description: '',
@@ -57,6 +82,31 @@ export default function SellProduct() {
   const [aiAnalysis, setAiAnalysis] = useState(null);
   const [priceSuggestion, setPriceSuggestion] = useState(null);
   const [categoryAutoFilled, setCategoryAutoFilled] = useState(false);
+  const [submitAttempted, setSubmitAttempted] = useState(false);
+
+  const currencyMeta = SUPPORTED_CURRENCIES.find((c) => c.code === selectedCurrency) || SUPPORTED_CURRENCIES.find((c) => c.code === 'INR');
+
+  const handleCurrencyChange = useCallback((newCurrency) => {
+    if (newCurrency === selectedCurrency) return;
+    // Prevent double conversion: convert displayed values from old to new
+    if (rates) {
+      setForm((prev) => {
+        const next = { ...prev };
+        const priceNum = toNumber(prev.price);
+        if (!Number.isNaN(priceNum) && prev.price !== '') {
+          const converted = convertPrice(priceNum, selectedCurrency, newCurrency, rates);
+          next.price = String(Math.round(converted * 100) / 100);
+        }
+        const origNum = toNumber(prev.originalPrice);
+        if (!Number.isNaN(origNum) && prev.originalPrice !== '') {
+          const convertedOrig = convertPrice(origNum, selectedCurrency, newCurrency, rates);
+          next.originalPrice = String(Math.round(convertedOrig * 100) / 100);
+        }
+        return next;
+      });
+    }
+    setSelectedCurrency(newCurrency);
+  }, [selectedCurrency, rates]);
 
   useEffect(() => {
     categoryService.list().then((r) => setCategories(r.data.categories)).catch(() => {});
@@ -76,7 +126,7 @@ export default function SellProduct() {
     }
   }, [aiAnalysis, categories, categoryAutoFilled, form.category]);
 
-  // Fetch price suggestion when category/condition/brand change
+  // Fetch price suggestion when category/condition/brand change - send INR to API
   useEffect(() => {
     if (!form.category || !form.condition) {
       setPriceSuggestion(null);
@@ -84,16 +134,46 @@ export default function SellProduct() {
     }
     const controller = new AbortController();
     const timeoutId = setTimeout(() => {
+      // Convert originalPrice to INR before sending to API
+      let originalPriceForApi;
+      const origNum = toNumber(form.originalPrice);
+      if (!Number.isNaN(origNum) && form.originalPrice !== '') {
+        originalPriceForApi = rates ? convertPrice(origNum, selectedCurrency, 'INR', rates) : origNum;
+      } else {
+        originalPriceForApi = undefined;
+      }
+      const yearsUsedNum = toInt(form.yearsUsed);
       productService.suggestPrice({
         category: form.category,
         condition: form.condition,
         brand: form.brand || undefined,
-        originalPrice: form.originalPrice || undefined,
-        yearsUsed: form.yearsUsed || undefined,
+        originalPrice: originalPriceForApi,
+        yearsUsed: Number.isFinite(yearsUsedNum) ? yearsUsedNum : undefined,
       }).then((r) => setPriceSuggestion(r.data)).catch(() => {});
     }, 500); // debounce 500ms
     return () => { clearTimeout(timeoutId); controller.abort(); };
-  }, [form.category, form.condition, form.brand, form.originalPrice, form.yearsUsed]);
+  }, [form.category, form.condition, form.brand, form.originalPrice, form.yearsUsed, selectedCurrency, rates]);
+
+  const handleLocationDetect = async () => {
+    const result = await locationDetector.detect();
+    if (result && result.raw) {
+      const addr = result.raw;
+      const city = addr.city || addr.town || addr.village || addr.hamlet || addr.county || '';
+      const state = addr.state || addr.state_district || addr.region || '';
+      const country = addr.country || '';
+      setForm((prev) => ({
+        ...prev,
+        location: {
+          city: city || prev.location.city,
+          state: state || prev.location.state,
+          country: country || prev.location.country,
+        },
+      }));
+      if (city || country) {
+        toast.success(`Location detected: ${[city, state, country].filter(Boolean).join(', ')}`);
+      }
+    }
+  };
 
   const handleImageUpload = async (e) => {
     const files = Array.from(e.target.files || []);
@@ -129,6 +209,8 @@ export default function SellProduct() {
       }
     } finally {
       setUploading(false);
+      // reset input so same file can be selected again if needed
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
 
@@ -155,36 +237,100 @@ export default function SellProduct() {
   };
 
   const canProceed = () => {
-    if (step === 0) return images.length > 0;
+    if (step === 0) return images.length > 0 && !uploading;
     if (step === 1) return form.title && form.description && form.price && form.category;
     return true;
   };
 
+  const getDisplayPrice = (amountInINR) => {
+    if (amountInINR === null || amountInINR === undefined) return '—';
+    if (!rates || selectedCurrency === 'INR') return formatPrice(amountInINR, 'INR');
+    const converted = convertPrice(amountInINR, 'INR', selectedCurrency, rates);
+    return formatPrice(converted, selectedCurrency);
+  };
+
   const handleSubmit = async () => {
+    if (loading) return; // prevent double click
     if (!images.length) {
       toast.error('Please upload at least one image');
       return;
     }
+    if (uploading) {
+      toast.error('Please wait for image upload to complete');
+      return;
+    }
+
+    // Validate required fields
+    setSubmitAttempted(true);
+    if (!form.title.trim()) { toast.error('Title is required'); return; }
+    if (!form.description.trim()) { toast.error('Description is required'); return; }
+    if (!form.category) { toast.error('Category is required'); return; }
+
+    const priceNum = toNumber(form.price);
+    if (Number.isNaN(priceNum)) { toast.error('Price must be a valid number'); return; }
+    if (priceNum < 0) { toast.error('Price cannot be negative'); return; }
+
+    let originalPriceNum = 0;
+    if (form.originalPrice !== '' && form.originalPrice !== null) {
+      const origParsed = toNumber(form.originalPrice);
+      if (Number.isNaN(origParsed)) { toast.error('Original price must be a valid number'); return; }
+      if (origParsed < 0) { toast.error('Original price cannot be negative'); return; }
+      originalPriceNum = origParsed;
+    }
+
+    const yearsUsedNum = toInt(form.yearsUsed);
+    if (Number.isNaN(yearsUsedNum)) { toast.error('Years used must be a valid number'); return; }
+    if (yearsUsedNum < 0) { toast.error('Years used cannot be negative'); return; }
+
+    // Convert display currency to INR for storage
+    const priceInINR = rates ? convertPrice(priceNum, selectedCurrency, 'INR', rates) : priceNum;
+    const originalPriceInINR = rates ? convertPrice(originalPriceNum, selectedCurrency, 'INR', rates) : originalPriceNum;
+
+    if (!Number.isFinite(priceInINR) || !Number.isFinite(originalPriceInINR)) {
+      toast.error('Currency conversion failed. Please try again.');
+      return;
+    }
+
     setLoading(true);
     try {
       const payload = {
-        ...form,
-        price: Number(form.price),
-        originalPrice: Number(form.originalPrice) || 0,
-        yearsUsed: Number(form.yearsUsed) || 0,
+        title: form.title.trim(),
+        description: form.description.trim(),
+        price: Math.round(priceInINR * 100) / 100,
+        originalPrice: Math.round(originalPriceInINR * 100) / 100,
+        currencyCode: 'INR',
+        category: form.category,
+        brand: form.brand?.trim() || '',
+        model: form.model?.trim() || '',
+        condition: form.condition,
+        yearsUsed: yearsUsedNum,
+        location: {
+          city: form.location.city?.trim() || '',
+          state: form.location.state?.trim() || '',
+          country: form.location.country?.trim() || '',
+        },
         images: images.map((img) => ({
           url: img.url,
           publicId: img.publicId,
           hash: img.hash,
         })),
-        specifications: form.specifications.filter((s) => s.key && s.value),
-        aiAnalysis: aiAnalysis || {},
+        specifications: form.specifications.filter((s) => s.key?.trim() && s.value?.trim()).map((s) => ({ key: s.key.trim(), value: s.value.trim() })),
       };
+
       const { data } = await productService.create(payload);
       toast.success('Listing published!');
       navigate(`/product/${data.product._id}`);
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Failed to create listing');
+      const status = err.response?.status;
+      const msg = err.response?.data?.message;
+      if (status === 400) toast.error(msg || 'Please check your input and try again.');
+      else if (status === 401) toast.error(msg || 'Please log in again.');
+      else if (status === 403) toast.error(msg || 'Not authorized.');
+      else if (status === 409) toast.error(msg || 'Duplicate listing detected.');
+      else if (status === 422) toast.error(msg || 'Validation failed.');
+      else if (status === 500) toast.error(msg || 'Server error. Please try again later.');
+      else if (!err.response) toast.error('Network error. Please check your connection.');
+      else toast.error(msg || 'Failed to create listing');
     } finally {
       setLoading(false);
     }
@@ -227,11 +373,6 @@ export default function SellProduct() {
                       )}
                       animate={{
                         scale: i <= step ? 1 : 0.9,
-                        backgroundColor: i < step
-                          ? 'linear-gradient(135deg, #4f4af0, #6671f8)'
-                          : i === step
-                          ? 'linear-gradient(135deg, #4f4af0, #6671f8)'
-                          : '#e2e8f0',
                       }}
                       transition={{ type: 'spring', stiffness: 400, damping: 20 }}
                     >
@@ -290,13 +431,14 @@ export default function SellProduct() {
                     </div>
 
                     <div
-                      onClick={() => fileInputRef.current?.click()}
-                      className="border-2 border-dashed border-slate-300 rounded-2xl p-12 text-center hover:border-brand-400 hover:bg-brand-50/30 transition-all cursor-pointer group"
+                      onClick={() => !uploading && fileInputRef.current?.click()}
+                      className={cn("border-2 border-dashed border-slate-300 rounded-2xl p-12 text-center transition-all group", uploading ? "opacity-70 cursor-not-allowed" : "hover:border-brand-400 hover:bg-brand-50/30 cursor-pointer")}
                     >
                       {uploading ? (
                         <motion.div className="flex flex-col items-center gap-3">
                           <Loader2 className="w-12 h-12 animate-spin text-brand-500" />
                           <p className="font-medium text-slate-700">Analyzing images...</p>
+                          <p className="text-xs text-slate-500">This may take a moment on first upload</p>
                         </motion.div>
                       ) : (
                         <>
@@ -365,7 +507,7 @@ export default function SellProduct() {
                 <ScrollReveal direction="up">
                   <TiltCard maxTilt={4} className="card p-6 space-y-6">
                     <div>
-                      <label className="text-sm font-medium mb-1 block">Title</label>
+                      <label className="text-sm font-medium mb-1 block">Title *</label>
                       <input
                         type="text"
                         value={form.title}
@@ -376,7 +518,7 @@ export default function SellProduct() {
                     </div>
 
                     <div>
-                      <label className="text-sm font-medium mb-1 block">Description</label>
+                      <label className="text-sm font-medium mb-1 block">Description *</label>
                       <textarea
                         value={form.description}
                         onChange={(e) => setForm({ ...form, description: e.target.value })}
@@ -389,7 +531,7 @@ export default function SellProduct() {
                     <div className="grid sm:grid-cols-2 gap-4">
                       <div>
                         <label className="text-sm font-medium mb-1 block">
-                          Category
+                          Category *
                           {categoryAutoFilled && (
                             <span className="ml-2 text-xs text-brand-500 font-normal">AI detected</span>
                           )}
@@ -444,41 +586,68 @@ export default function SellProduct() {
                       </div>
                     </div>
 
-                    <div className="grid sm:grid-cols-3 gap-4">
-                      <div>
-                        <label className="text-sm font-medium mb-1 block">Price ($)</label>
-                        <input
-                          type="number"
-                          value={form.price}
-                          onChange={(e) => setForm({ ...form, price: e.target.value })}
-                          placeholder="0.00"
-                          className="input"
-                        />
+                    {/* Currency + Price Row */}
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <label className="text-sm font-medium">Pricing</label>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-slate-500">Currency</span>
+                          <div className="relative">
+                            <select
+                              value={selectedCurrency}
+                              onChange={(e) => handleCurrencyChange(e.target.value)}
+                              className="input py-1.5 pr-8 pl-3 text-sm font-medium min-w-[110px]"
+                            >
+                              {SUPPORTED_CURRENCIES.filter(c => ['INR','USD','EUR','GBP','AED','SGD','AUD','CAD','JPY'].includes(c.code)).map((c) => (
+                                <option key={c.code} value={c.code}>{c.code} {c.symbol}</option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
                       </div>
-                      <div>
-                        <label className="text-sm font-medium mb-1 block">Original Price ($)</label>
-                        <input
-                          type="number"
-                          value={form.originalPrice}
-                          onChange={(e) => setForm({ ...form, originalPrice: e.target.value })}
-                          placeholder="0.00"
-                          className="input"
-                        />
+                      <div className="grid sm:grid-cols-3 gap-4">
+                        <div>
+                          <label className="text-sm font-medium mb-1 block">Price * ({currencyMeta.symbol})</label>
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            value={form.price}
+                            onChange={(e) => setForm({ ...form, price: e.target.value })}
+                            placeholder="0"
+                            className="input"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-sm font-medium mb-1 block">Original Price ({currencyMeta.symbol})</label>
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            value={form.originalPrice}
+                            onChange={(e) => setForm({ ...form, originalPrice: e.target.value })}
+                            placeholder="0"
+                            className="input"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-sm font-medium mb-1 block">Years Used</label>
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            value={form.yearsUsed}
+                            onChange={(e) => setForm({ ...form, yearsUsed: e.target.value })}
+                            placeholder="0"
+                            className="input"
+                          />
+                        </div>
                       </div>
-                      <div>
-                        <label className="text-sm font-medium mb-1 block">Years Used</label>
-                        <input
-                          type="number"
-                          value={form.yearsUsed}
-                          onChange={(e) => setForm({ ...form, yearsUsed: e.target.value })}
-                          min="0"
-                          className="input"
-                        />
-                      </div>
+                      <p className="text-xs text-slate-400 mt-2">Stored as INR. Price guidance will convert automatically.</p>
                     </div>
 
                     <div>
-                      <label className="text-sm font-medium mb-1 block">Location</label>
+                      <div className="flex items-center justify-between mb-2">
+                        <label className="text-sm font-medium">Location</label>
+                        <LocationDetectButton onDetect={handleLocationDetect} loading={locationDetector.loading} error={locationDetector.error} />
+                      </div>
                       <div className="grid sm:grid-cols-3 gap-3">
                         <input
                           type="text"
@@ -612,12 +781,13 @@ export default function SellProduct() {
                         <div className="flex items-center gap-2 mb-2">
                           <DollarSign className="w-5 h-5 text-emerald-500" />
                           <span className="font-semibold text-sm">Suggested Price</span>
+                          <span className="text-xs text-slate-400">({selectedCurrency})</span>
                         </div>
                         <div className="text-2xl font-display font-extrabold gradient-text mb-1">
-                          {formatPrice(priceSuggestion.suggestedPrice)}
+                          {getDisplayPrice(priceSuggestion.suggestedPrice)}
                         </div>
                         <div className="text-xs text-slate-500 mb-2">
-                          Range: {formatPrice(priceSuggestion.priceRange.min)} – {formatPrice(priceSuggestion.priceRange.max)}
+                          Range: {getDisplayPrice(priceSuggestion.priceRange.min)} – {getDisplayPrice(priceSuggestion.priceRange.max)}
                         </div>
                         <div className="text-xs text-slate-500">
                           Suggested based on {priceSuggestion.comparableCount} comparable listing{priceSuggestion.comparableCount !== 1 ? 's' : ''}
@@ -692,7 +862,13 @@ export default function SellProduct() {
                           transition={{ delay: 0.1 }}
                           className="text-3xl font-display font-extrabold gradient-text"
                         >
-                          {formatPrice(Number(form.price))}
+                          {(() => {
+                            const n = toNumber(form.price);
+                            if (Number.isNaN(n)) return '—';
+                            const inr = rates ? convertPrice(n, selectedCurrency, 'INR', rates) : n;
+                            return formatPrice(inr, 'INR');
+                          })()}
+                          <span className="text-sm font-normal text-slate-500 ml-2">({getDisplayPrice(toNumber(form.price) && rates ? convertPrice(toNumber(form.price), selectedCurrency, 'INR', rates) : 0)} in {selectedCurrency})</span>
                         </motion.div>
                         <motion.div
                           initial={{ opacity: 0, y: 10 }}
@@ -711,6 +887,9 @@ export default function SellProduct() {
                         >
                           {form.description}
                         </motion.p>
+                        {(form.location.city || form.location.country) && (
+                          <p className="text-xs text-slate-500">{[form.location.city, form.location.state, form.location.country].filter(Boolean).join(', ')}</p>
+                        )}
                       </div>
                     </div>
                   </TiltCard>
@@ -749,14 +928,19 @@ export default function SellProduct() {
               ) : (
                 <MagneticButton
                   onClick={handleSubmit}
-                  disabled={loading}
+                  disabled={loading || uploading}
                   className="btn-primary"
                   strength={0.15}
                 >
                   {loading ? (
                     <>
                       <Loader2 className="w-4 h-4 animate-spin" />
-                      Publishing...
+                      Creating listing...
+                    </>
+                  ) : uploading ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Uploading...
                     </>
                   ) : (
                     <>

@@ -189,7 +189,7 @@ describe('JWT Cookie Auth Flow', () => {
         .set('Cookie', 'refresh_token=totally-invalid-token')
         .expect(401);
 
-      expect(res.body.code).toBe('TOKEN_INVALID');
+      expect(res.body.code).toBe('REFRESH_TOKEN_INVALID');
     });
 
     it('missing refresh token returns 401', async () => {
@@ -197,7 +197,7 @@ describe('JWT Cookie Auth Flow', () => {
         .post('/api/auth/refresh')
         .expect(401);
 
-      expect(res.body.code).toBe('UNAUTHORIZED');
+      expect(res.body.code).toBe('REFRESH_TOKEN_MISSING');
     });
   });
 
@@ -218,11 +218,11 @@ describe('JWT Cookie Auth Flow', () => {
         .set('Cookie', `refresh_token=${expiredRefresh}`)
         .expect(401);
 
-      expect(res.body.code).toBe('TOKEN_INVALID');
+      expect(res.body.code).toBe('REFRESH_TOKEN_INVALID');
 
-      // Verify: no new cookies were set
+      // Verify: no new cookies were set (helper returns '' when absent)
       const newAccessToken = extractAccessToken(res);
-      expect(newAccessToken).toBeNull();
+      expect(newAccessToken).toBeFalsy();
     });
   });
 
@@ -304,7 +304,7 @@ describe('JWT Cookie Auth Flow', () => {
       const refreshCookie = rawSetCookie.find((s) => s.startsWith('refresh_token='));
 
       expect(refreshCookie).toContain('HttpOnly');
-      expect(refreshCookie).toContain('Path=/api/auth');
+      expect(refreshCookie).toContain('Path=/');
     });
   });
 });

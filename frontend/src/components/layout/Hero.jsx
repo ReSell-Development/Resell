@@ -9,6 +9,7 @@ import {
 } from 'framer-motion';
 import { ArrowRight, ChevronDown, Sparkles } from 'lucide-react';
 import { productService } from '../../services/services';
+import useFormatPrice from '../../hooks/useFormatPrice';
 
 const HEADLINE_LINES = [
   ['Buy', 'less.'],
@@ -23,9 +24,6 @@ const CARD_STYLES = [
   { style: { bottom: '13%', right: '8%' }, baseRotate: -5, depth: 1.3, floatDuration: 7, delay: 0.8, size: 'w-44 xl:w-52' },
   { style: { top: '46%', left: '16%' }, xlOnly: true, baseRotate: 3, depth: 0.7, floatDuration: 9, delay: 0.95, size: 'w-36 xl:w-40' },
 ];
-
-const formatPrice = (price) =>
-  `$${Number(price).toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
 
 function useTrendingProducts(limit = CARD_STYLES.length) {
   const [products, setProducts] = useState([]);
@@ -76,6 +74,7 @@ function AnimatedHeadline() {
 }
 
 function FloatingProductCard({ product, style, index }) {
+  const formatPrice = useFormatPrice();
   const img = product.images?.find((i) => i.isPrimary)?.url || product.images?.[0]?.url;
   if (!img) return null;
 
@@ -146,6 +145,7 @@ function MouseParallax({ children, depth = 1 }) {
 
 export default function Hero() {
   const sectionRef = useRef(null);
+  const formatPrice = useFormatPrice('USD');
   const trending = useTrendingProducts();
 
   const mx = useMotionValue(0);

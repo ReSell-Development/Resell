@@ -4,6 +4,7 @@ const Product = require('../models/Product');
 const Category = require('../models/Category');
 const { perceptualHashFromBuffer } = require('../services/imageHash');
 const { createCVProvider } = require('../services/cvAdapter');
+const { extractColorHistogram, downloadImageBuffer } = require('../services/imageUtils');
 const cvProvider = createCVProvider();
 const { calculateRecommendedPrice } = require('../services/priceRecommendation');
 const { detectRisk } = require('../services/fraudDetection');
@@ -32,6 +33,9 @@ const imageProcessingWorker = new Worker(
         // Images were already uploaded to Cloudinary during the request.
         // Reuse the existing URL/publicId instead of uploading again.
         const hash = await perceptualHashFromBuffer(buffer);
+        
+        // Extract color histogram
+        const colorHistogram = await extractColorHistogram(buffer);
 
         const [condition, damage, classification] = await Promise.all([
           cvProvider.assessCondition(buffer),
@@ -46,6 +50,7 @@ const imageProcessingWorker = new Worker(
           url: image.url,
           publicId: image.publicId,
           hash,
+          colorHistogram,
           analysis: {
             conditionScore: condition.score,
             damageScore: damage.score,
@@ -94,6 +99,9 @@ const imageProcessingWorker = new Worker(
             url: r.url,
             publicId: r.publicId,
             isPrimary: idx === 0,
+            perceptualHash: r.hash,
+            colorHistogram: r.colorHistogram,
+            productType: 'unknown', // Will be filled by ML service if needed
           })),
           aiAnalysis: {
             classification: {
@@ -123,6 +131,39 @@ const imageProcessingWorker = new Worker(
       if (!product) {
         throw new Error('Product not found');
       }
+
+      // Extract CNN features for duplicate detection (async, non-blocking)
+      // This is done in background to not slow down the worker
+      setImmediate(async () => {
+        try {
+          const axios = require('axios');
+          const mlServiceUrl = process.env.ML_SERVICE_URL || 'http://localhost:5000';
+          const mlClient = axios.create({ baseURL: mlServiceUrl, timeout: 15000 });
+          
+          for (const image of images) {
+            if (image.url) {
+              try {
+                const response = await mlClient.post('/extract-cnn', { imageUrl: image.url });
+                if (response.data?.features?.length) {
+                  // Update product with CNN features
+                  await Product.findByIdAndUpdate(productId, {
+                    $set: {
+                      'images.$[elem].cnnFeatures': response.data.features,
+                      'images.$[elem].productType': response.data.product_type || 'unknown',
+                    },
+                  }, {
+                    arrayFilters: [{ 'elem.url': image.url }],
+                  });
+                }
+              } catch (e) {
+                console.warn(`[Worker] CNN extraction failed for ${image.url}:`, e.message);
+              }
+            }
+          }
+        } catch (e) {
+          console.warn('[Worker] Background CNN extraction failed:', e.message);
+        }
+      });
 
       const risk = await detectRisk({
         product,

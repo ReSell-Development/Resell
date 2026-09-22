@@ -3,6 +3,8 @@ import { useSearchParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Search, SlidersHorizontal, X, Filter } from 'lucide-react';
 import { productService, categoryService } from '../services/services';
+import { useCurrency } from '../contexts/CurrencyContext';
+import { convertPrice } from '../utils/currency';
 import ProductCard from '../components/product/ProductCard';
 import { SkeletonGrid } from '../components/ui/Skeleton';
 import EmptyState from '../components/ui/EmptyState';
@@ -13,6 +15,7 @@ import MagneticButton from '../components/ui/MagneticButton';
 
 export default function Marketplace() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const { currency, rates } = useCurrency();
   const [products, setProducts] = useState([]);
   const [categories, setCategories] = useState([]);
   const [brands, setBrands] = useState([]);
@@ -40,8 +43,20 @@ export default function Marketplace() {
   useEffect(() => {
     setLoading(true);
     setLoadError(null);
+    // Backend price filters compare canonical USD prices. Convert the user's
+    // selected-currency input to USD before sending (never send INR/EUR/... raw).
+    const toUsd = (v) => {
+      if (!v) return '';
+      const converted = convertPrice(Number(v), currency, 'USD', rates || {});
+      return Number.isFinite(converted) ? String(Math.round(converted)) : '';
+    };
+    const apiParams = {
+      ...filters,
+      minPrice: toUsd(filters.minPrice),
+      maxPrice: toUsd(filters.maxPrice),
+    };
     productService
-      .list(filters)
+      .list(apiParams)
       .then((r) => {
         setProducts(r.data.items);
         setPagination(r.data.pagination);
@@ -51,7 +66,7 @@ export default function Marketplace() {
         setLoadError(isNetwork ? 'network' : 'error');
       })
       .finally(() => setLoading(false));
-  }, [filters]);
+  }, [filters, currency, rates]);
 
   const setFilter = (key, value) => {
     setFilters((prev) => ({ ...prev, [key]: value, page: 1 }));

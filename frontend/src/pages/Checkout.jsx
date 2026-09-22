@@ -5,7 +5,7 @@ import { CreditCard, Loader2, Shield, ArrowLeft } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { checkoutService, productService } from '../services/services';
 import { useAuth } from '../contexts/AuthContext';
-import { formatPrice } from '../utils/format';
+import useFormatPrice from '../hooks/useFormatPrice';
 import DeliveryAddressForm from '../components/checkout/DeliveryAddressForm';
 import PageTransition from '../components/layout/PageTransition';
 import Loader from '../components/ui/Loader';
@@ -32,6 +32,7 @@ export default function Checkout() {
 
   const platformFee = Math.round((product?.price || 0) * 0.05);
   const total = (product?.price || 0) + platformFee;
+  const formatPrice = useFormatPrice(product?.currencyCode || 'USD');
 
   const handleAddressConfirm = (addr) => {
     setAddress(addr);

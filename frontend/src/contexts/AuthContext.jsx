@@ -1,5 +1,6 @@
-import { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { authService } from '../services/services';
+import { clearApiCache } from '../services/api';
 
 const AuthContext = createContext(null);
 
@@ -7,47 +8,68 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  const mountedRef = useRef(false);
+  const requestRef = useRef(0);
+
   const loadUser = useCallback(async () => {
+    const request = ++requestRef.current;
+    const isCurrent = () => mountedRef.current && request === requestRef.current;
     try {
-      // Auth is now cookie-based — the server reads the httpOnly access_token cookie.
-      // If the cookie is missing/expired, the server returns 401 and the API
-      // interceptor will attempt a refresh before redirecting to login.
       const { data } = await authService.me();
-      setUser(data.user);
+      if (isCurrent()) setUser(data.user);
     } catch (err) {
+      if (!isCurrent()) return;
       console.error('[Auth] Load user failed:', err);
       setUser(null);
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
+    mountedRef.current = true;
     loadUser();
+    return () => {
+      mountedRef.current = false;
+      requestRef.current += 1;
+    };
   }, [loadUser]);
 
   const login = async (credentials) => {
-    const { data } = await authService.login(credentials);
-    // Tokens are set as httpOnly cookies by the server — no localStorage needed.
-    setUser(data.user);
-    return data.user;
+    const request = ++requestRef.current;
+    try {
+      const { data } = await authService.login(credentials);
+      if (mountedRef.current && request === requestRef.current) setUser(data.user);
+      return data.user;
+    } finally {
+      if (mountedRef.current && request === requestRef.current) setLoading(false);
+    }
   };
 
   const register = async (userData) => {
-    const { data } = await authService.register(userData);
-    // Tokens are set as httpOnly cookies by the server — no localStorage needed.
-    setUser(data.user);
-    return data.user;
+    const request = ++requestRef.current;
+    try {
+      const { data } = await authService.register(userData);
+      if (mountedRef.current && request === requestRef.current) setUser(data.user);
+      return data.user;
+    } finally {
+      if (mountedRef.current && request === requestRef.current) setLoading(false);
+    }
   };
 
   const logout = async () => {
+    const request = ++requestRef.current;
+    clearApiCache();
     try {
       await authService.logout();
-    } catch (err) {
-      /* ignore */
+    } catch {
+    } finally {
+      clearApiCache();
+      if (mountedRef.current && request === requestRef.current) {
+        setUser(null);
+        setLoading(false);
+      }
     }
-    // Server clears the httpOnly cookies.
-    setUser(null);
   };
 
   const updateUser = (updates) => {

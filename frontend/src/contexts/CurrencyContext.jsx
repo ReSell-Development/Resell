@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import api from '../services/api';
 import { SUPPORTED_CURRENCIES, resolveCurrency, isSupportedCurrency } from '../utils/currency';
 import { useAuth } from './AuthContext';

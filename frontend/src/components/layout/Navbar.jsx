@@ -1,5 +1,5 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Search,
@@ -15,11 +15,13 @@ import {
   X,
   Sparkles,
   ChevronDown,
+  Tag,
+  Shield,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useSocket } from '../../contexts/SocketContext';
 import { notificationService } from '../../services/services';
-import { cn } from '../../utils/format';
+import { cn, formatRelativeTime } from '../../utils/format';
 import MagneticButton from '../ui/MagneticButton';
 import CurrencySelector from '../ui/CurrencySelector';
 
@@ -36,6 +38,15 @@ export default function Navbar() {
   const [notifOpen, setNotifOpen] = useState(false);
   const [notifications, setNotifications] = useState([]);
 
+  const navbarRef = useRef(null);
+
+  const closeAll = useCallback(() => {
+    setNotifOpen(false);
+    setMenuOpen(false);
+    setUserMenuOpen(false);
+    setSearchOpen(false);
+  }, []);
+
   useEffect(() => {
     const handler = () => setScrolled(window.scrollY > 24);
     handler();
@@ -44,9 +55,43 @@ export default function Navbar() {
   }, []);
 
   useEffect(() => {
-    setUserMenuOpen(false);
-    setMenuOpen(false);
-  }, [location.pathname, location.search]);
+    closeAll();
+  }, [location.pathname, location.search, closeAll]);
+
+  // Click outside to close all dropdowns
+  useEffect(() => {
+    const onClickOutside = (e) => {
+      if (navbarRef.current && !navbarRef.current.contains(e.target)) {
+        closeAll();
+      }
+    };
+    const anyOpen = notifOpen || menuOpen || searchOpen || userMenuOpen;
+    if (anyOpen) {
+      document.addEventListener('mousedown', onClickOutside);
+    }
+    return () => document.removeEventListener('mousedown', onClickOutside);
+  }, [notifOpen, menuOpen, searchOpen, userMenuOpen, closeAll]);
+
+  // Escape to close overlays + body scroll lock for mobile menu / notifications
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') {
+        closeAll();
+      }
+    };
+    const anyOpen = notifOpen || menuOpen || searchOpen || userMenuOpen;
+    if (anyOpen) document.addEventListener('keydown', onKey);
+    // lock scroll when mobile menu or notifications open on small screens
+    if (notifOpen || menuOpen || searchOpen) {
+      if (window.innerWidth < 992) document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = '';
+    }
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.body.style.overflow = '';
+    };
+  }, [notifOpen, menuOpen, searchOpen, userMenuOpen, closeAll]);
 
   const handleSearch = (e) => {
     e.preventDefault();
@@ -69,9 +114,16 @@ export default function Navbar() {
     } catch {}
   };
 
-  const handleNotifClick = () => {
-    setNotifOpen((s) => !s);
-    if (!notifOpen) loadNotifications();
+  const handleNotifClick = (e) => {
+    e?.stopPropagation();
+    setNotifOpen((s) => {
+      const next = !s;
+      if (next && !s) loadNotifications();
+      return next;
+    });
+    setMenuOpen(false);
+    setUserMenuOpen(false);
+    setSearchOpen(false);
   };
 
   const handleMarkAllRead = async () => {
@@ -82,6 +134,133 @@ export default function Navbar() {
     } catch {}
   };
 
+  const handleNotificationClick = (notification) => {
+    const { type, payload } = notification;
+    closeAll();
+    if (type === 'message' && payload?.conversationId) {
+      navigate(`/chat/${payload.conversationId}`);
+    } else if (type === 'offer' && payload?.productId) {
+      navigate(`/product/${payload.productId}`);
+    } else if (type === 'report_update' && payload?.reportId) {
+      navigate(`/reports/${payload.reportId}`);
+    }
+  };
+
+  const renderNotificationContent = (n) => {
+    const { type, payload, createdAt } = n;
+    const timeAgo = formatRelativeTime(createdAt);
+    const sender = payload?.senderId;
+    const senderName = sender?.name || 'Someone';
+    const senderAvatar = sender?.avatar?.url;
+
+    const getAvatar = () => (
+      <div className="h-8 w-8 rounded-full flex-shrink-0 overflow-hidden bg-slate-100">
+        {senderAvatar ? (
+          <img src={senderAvatar} alt={senderName} className="h-full w-full object-cover" />
+        ) : (
+          <div className="h-full w-full grid place-items-center bg-gradient-to-br from-brand-500 to-accent-500 text-white text-sm font-semibold">
+            {senderName?.[0]?.toUpperCase() || '?'}
+          </div>
+        )}
+      </div>
+    );
+
+    const getIcon = (icon, color) => (
+      <div className={`h-8 w-8 rounded-full flex-shrink-0 flex items-center justify-center ${color}`}>
+        <icon className="h-4 w-4 text-white" />
+      </div>
+    );
+
+    switch (type) {
+      case 'message': {
+        const productTitle = payload?.productId?.title;
+        return (
+          <>
+            {getAvatar()}
+            <div className="flex-1 min-w-0">
+              <p className="font-medium text-slate-900">
+                <span className="font-semibold">{senderName}</span> sent you a message
+              </p>
+              {productTitle && (
+                <p className="text-xs text-slate-500 truncate">About: {productTitle}</p>
+              )}
+            </div>
+            <div className="flex items-center gap-2 text-slate-400 text-xs">
+              <MessageCircle className="h-3.5 w-3.5" />
+              <span>{timeAgo}</span>
+            </div>
+          </>
+        );
+      }
+      case 'offer': {
+        const amount = payload?.offerId?.amount;
+        const productTitle = payload?.offerId?.product?.title || payload?.productId?.title;
+        return (
+          <>
+            {getIcon(Tag, 'bg-amber-500')}
+            <div className="flex-1 min-w-0">
+              <p className="font-medium text-slate-900">
+                <span className="font-semibold">{senderName}</span> made an offer
+                {amount && <span className="text-brand-600 font-semibold ml-1">₹{Number(amount).toLocaleString()}</span>}
+              </p>
+              {productTitle && (
+                <p className="text-xs text-slate-500 truncate">on <span className="font-medium">{productTitle}</span></p>
+              )}
+            </div>
+            <div className="flex items-center gap-2 text-slate-400 text-xs">
+              <Tag className="h-3.5 w-3.5" />
+              <span>{timeAgo}</span>
+            </div>
+          </>
+        );
+      }
+      case 'report_update': {
+        const status = payload?.reportId?.status;
+        return (
+          <>
+            {getIcon(Shield, 'bg-blue-500')}
+            <div className="flex-1 min-w-0">
+              <p className="font-medium text-slate-900">
+                Report <span className="font-semibold capitalize">{status || 'updated'}</span>
+              </p>
+            </div>
+            <div className="flex items-center gap-2 text-slate-400 text-xs">
+              <Shield className="h-3.5 w-3.5" />
+              <span>{timeAgo}</span>
+            </div>
+          </>
+        );
+      }
+      case 'admin_action': {
+        return (
+          <>
+            {getIcon(Shield, 'bg-purple-500')}
+            <div className="flex-1 min-w-0">
+              <p className="font-medium text-slate-900">Admin action taken</p>
+            </div>
+            <div className="flex items-center gap-2 text-slate-400 text-xs">
+              <Shield className="h-3.5 w-3.5" />
+              <span>{timeAgo}</span>
+            </div>
+          </>
+        );
+      }
+      default:
+        return (
+          <>
+            {getIcon(Bell, 'bg-slate-500')}
+            <div className="flex-1 min-w-0">
+              <p className="font-medium text-slate-900">New notification</p>
+            </div>
+            <div className="flex items-center gap-2 text-slate-400 text-xs">
+              <Bell className="h-3.5 w-3.5" />
+              <span>{timeAgo}</span>
+            </div>
+          </>
+        );
+    }
+  };
+
   const navLinks = [
     { to: '/marketplace', label: 'Browse', match: (s) => s.get('sort') !== 'popular' && s.get('sort') !== 'newest' },
     { to: '/marketplace?sort=popular', label: 'Trending', match: (s) => s.get('sort') === 'popular' },
@@ -90,6 +269,7 @@ export default function Navbar() {
 
   return (
     <motion.header
+      ref={navbarRef}
       initial={{ y: -24, opacity: 0 }}
       animate={{ y: 0, opacity: 1 }}
       transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
@@ -168,8 +348,14 @@ export default function Navbar() {
           {/* Right side actions */}
           <div className="flex items-center gap-1.5">
             <motion.button
-              onClick={() => setSearchOpen(true)}
-              className="rounded-xl p-2 transition-colors hover:bg-white/70 xl:hidden"
+              onClick={(e) => {
+                e.stopPropagation();
+                setSearchOpen(true);
+                setNotifOpen(false);
+                setMenuOpen(false);
+                setUserMenuOpen(false);
+              }}
+              className="rounded-xl p-2 transition-colors hover:bg-white/70 xl:hidden min-h-[44px] min-w-[44px] grid place-items-center"
               aria-label="Search"
               whileTap={{ scale: 0.9 }}
             >
@@ -202,9 +388,11 @@ export default function Navbar() {
                 <div className="relative">
                   <motion.button
                     onClick={handleNotifClick}
-                    className="group relative hidden rounded-xl p-2 transition-colors hover:bg-white/70 sm:flex"
+                    className="group relative hidden rounded-xl p-2 transition-colors hover:bg-white/70 sm:flex min-h-[44px] min-w-[44px] items-center justify-center"
                     whileTap={{ scale: 0.9 }}
                     aria-label="Notifications"
+                    aria-expanded={notifOpen}
+                    aria-haspopup="dialog"
                   >
                     <Bell className="h-5 w-5 text-slate-600 transition-colors group-hover:text-brand-600" />
                     {unreadNotifications > 0 && (
@@ -213,6 +401,14 @@ export default function Navbar() {
                       </span>
                     )}
                   </motion.button>
+                  {/* overlay for tablet/mobile notifications */}
+                  {notifOpen && (
+                    <div
+                      className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm lg:hidden"
+                      onClick={() => setNotifOpen(false)}
+                      aria-hidden="true"
+                    />
+                  )}
                   <AnimatePresence>
                     {notifOpen && (
                       <motion.div
@@ -220,29 +416,42 @@ export default function Navbar() {
                         animate={{ opacity: 1, y: 0, scale: 1 }}
                         exit={{ opacity: 0, y: -8, scale: 0.96 }}
                         transition={{ duration: 0.18 }}
-                        className="absolute right-0 mt-3 w-80 overflow-hidden rounded-2xl border border-slate-100 bg-white/95 shadow-2xl backdrop-blur-2xl z-50"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-label="Notifications"
+                        className="absolute right-0 mt-3 w-80 max-w-[92vw] overflow-hidden rounded-2xl border border-slate-100 bg-white/95 shadow-2xl backdrop-blur-2xl z-50 max-sm:fixed max-sm:inset-x-3 max-sm:top-20 max-sm:right-auto max-sm:left-auto"
                       >
                         <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
                           <p className="text-sm font-semibold text-slate-900">Notifications</p>
-                          {unreadNotifications > 0 && (
-                            <button onClick={handleMarkAllRead} className="text-xs text-brand-600 hover:text-brand-700 font-medium">
-                              Mark all read
+                          <div className="flex items-center gap-2">
+                            {unreadNotifications > 0 && (
+                              <button onClick={handleMarkAllRead} className="text-xs text-brand-600 hover:text-brand-700 font-medium min-h-[44px] px-2">
+                                Mark all read
+                              </button>
+                            )}
+                            <button onClick={() => setNotifOpen(false)} aria-label="Close notifications" className="min-h-[44px] min-w-[44px] grid place-items-center rounded-xl hover:bg-slate-100">
+                              <X className="h-4 w-4" />
                             </button>
-                          )}
+                          </div>
                         </div>
-                        <div className="max-h-80 overflow-y-auto">
+                        <div className="max-h-80 overflow-y-auto overscroll-contain">
                           {notifications.length === 0 ? (
                             <p className="px-4 py-6 text-center text-sm text-slate-400">No notifications yet</p>
                           ) : (
                             notifications.map((n) => (
                               <div
                                 key={n._id}
-                                className={`px-4 py-3 border-b border-slate-50 text-sm ${n.read ? 'text-slate-500' : 'text-slate-900 bg-brand-50/30'}`}
+                                onClick={() => handleNotificationClick(n)}
+                                className={`px-4 py-3 border-b border-slate-50 cursor-pointer transition-colors ${
+                                  n.read ? 'text-slate-500 hover:bg-slate-50' : 'text-slate-900 bg-brand-50/30 hover:bg-brand-50/50'
+                                }`}
+                                role="button"
+                                tabIndex={0}
+                                onKeyDown={(e) => e.key === 'Enter' && handleNotificationClick(n)}
                               >
-                                {n.type === 'message' && 'New message received'}
-                                {n.type === 'offer' && 'New offer received'}
-                                {n.type === 'report_update' && 'Report status updated'}
-                                {n.type === 'admin_action' && 'Admin action taken'}
+                                <div className="flex items-start gap-3">
+                                  {renderNotificationContent(n)}
+                                </div>
                               </div>
                             ))
                           )}
@@ -254,7 +463,18 @@ export default function Navbar() {
 
                 <div className="relative">
                   <motion.button
-                    onClick={() => setUserMenuOpen((s) => !s)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setUserMenuOpen((s) => {
+                        const next = !s;
+                        if (next) {
+                          setNotifOpen(false);
+                          setMenuOpen(false);
+                          setSearchOpen(false);
+                        }
+                        return next;
+                      });
+                    }}
                     className="flex items-center gap-1.5 rounded-full p-1 transition-colors hover:bg-white/70"
                     whileTap={{ scale: 0.95 }}
                     aria-label="Account menu"
@@ -298,7 +518,7 @@ export default function Navbar() {
                             <Link
                               key={item.to}
                               to={item.to}
-                              onClick={() => setUserMenuOpen(false)}
+                              onClick={closeAll}
                               className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-slate-700 transition-colors hover:bg-slate-50"
                             >
                               <item.icon className="h-4 w-4" />
@@ -308,7 +528,7 @@ export default function Navbar() {
                           {user.role === 'admin' && (
                             <Link
                               to="/admin/dashboard"
-                              onClick={() => setUserMenuOpen(false)}
+                              onClick={closeAll}
                               className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-slate-700 transition-colors hover:bg-slate-50"
                             >
                               <LayoutDashboard className="h-4 w-4" />
@@ -344,10 +564,22 @@ export default function Navbar() {
             )}
 
             <motion.button
-              onClick={() => setMenuOpen((s) => !s)}
-              className="rounded-xl p-2.5 transition-colors hover:bg-white/70 lg:hidden"
+              onClick={(e) => {
+                e.stopPropagation();
+                setMenuOpen((s) => {
+                  const next = !s;
+                  if (next) {
+                    setNotifOpen(false);
+                    setUserMenuOpen(false);
+                    setSearchOpen(false);
+                  }
+                  return next;
+                });
+              }}
+              className="rounded-xl p-2.5 transition-colors hover:bg-white/70 lg:hidden min-h-[44px] min-w-[44px] grid place-items-center"
               whileTap={{ scale: 0.9 }}
               aria-label="Menu"
+              aria-expanded={menuOpen}
             >
               {menuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
             </motion.button>
@@ -475,7 +707,7 @@ function IconLink({ to, label, children, badge }) {
     <Link
       to={to}
       aria-label={label}
-      className="group relative hidden rounded-xl p-2 transition-colors hover:bg-white/70 sm:flex"
+      className="group relative hidden rounded-xl p-2 transition-colors hover:bg-white/70 sm:flex min-h-[44px] min-w-[44px] items-center justify-center"
     >
       {children}
       {badge > 0 && (

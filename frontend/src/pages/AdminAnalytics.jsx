@@ -3,9 +3,10 @@ import { motion } from 'framer-motion';
 import { adminService } from '../services/services';
 import AdminLayout from '../components/admin/AdminLayout';
 import Loader from '../components/ui/Loader';
-import { formatPrice } from '../utils/format';
+import useFormatPrice from '../hooks/useFormatPrice';
 
 export default function AdminAnalytics() {
+  const formatPrice = useFormatPrice('USD');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
 

@@ -15,11 +15,13 @@ import { productService } from '../services/services';
 import PageTransition from '../components/layout/PageTransition';
 import Loader from '../components/ui/Loader';
 import EmptyState from '../components/ui/EmptyState';
-import { formatPrice, formatDate, cn } from '../utils/format';
+import { formatDate, cn } from '../utils/format';
+import useFormatPrice from '../hooks/useFormatPrice';
 import { ScrollReveal, RevealOnScroll } from '../components/ui/ScrollReveal';
 import MagneticButton from '../components/ui/MagneticButton';
 
 export default function MyProducts() {
+  const formatPrice = useFormatPrice('USD');
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
 

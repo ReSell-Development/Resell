@@ -15,7 +15,8 @@ import {
 import { adminService } from '../services/services';
 import AdminLayout from '../components/admin/AdminLayout';
 import Loader from '../components/ui/Loader';
-import { formatPrice, formatDate } from '../utils/format';
+import { formatDate } from '../utils/format';
+import useFormatPrice from '../hooks/useFormatPrice';
 import { ScrollReveal, RevealOnScroll } from '../components/ui/ScrollReveal';
 import { TiltCard } from '../components/ui/TiltCard';
 
@@ -27,6 +28,7 @@ const ICONS = {
 };
 
 export default function AdminDashboard() {
+  const formatPrice = useFormatPrice('USD');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
 

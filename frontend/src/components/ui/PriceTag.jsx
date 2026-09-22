@@ -1,7 +1,8 @@
 import { motion } from 'framer-motion';
-import { formatPrice } from '../../utils/format';
+import useFormatPrice from '../../hooks/useFormatPrice';
 
 export default function PriceTag({ price, originalPrice, size = 'md', className = '' }) {
+  const formatPrice = useFormatPrice('USD');
   const sizes = {
     sm: 'text-base',
     md: 'text-xl',

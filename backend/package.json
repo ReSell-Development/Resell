@@ -5,7 +5,8 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "nodemon src/server.js",
+    "dev": "node scripts/portGuard.js && nodemon src/server.js",
+    "dev:restart": "node scripts/restartBackend.js && nodemon src/server.js",
     "seed": "node src/utils/seed.js",
     "test": "jest --runInBand --detectOpenHandles --forceExit",
     "test:watch": "jest --watch",

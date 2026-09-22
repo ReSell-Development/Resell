@@ -17,7 +17,7 @@ import toast from 'react-hot-toast';
 import { chatService } from '../services/services';
 import { useSocket } from '../contexts/SocketContext';
 import { useAuth } from '../contexts/AuthContext';
-import { formatPrice, formatTime, formatDate, cn } from '../utils/format';
+import { formatTime, formatDate, cn } from '../utils/format';
 import PageTransition from '../components/layout/PageTransition';
 import Loader from '../components/ui/Loader';
 import { ScrollReveal } from '../components/ui/ScrollReveal';
@@ -31,6 +31,7 @@ export default function Chat() {
     socket,
     on,
     off,
+    emit,
     joinConversation,
     leaveConversation,
     emitTyping,
@@ -75,21 +76,42 @@ export default function Chat() {
 
   // Load messages when active conversation changes
   useEffect(() => {
-    if (!activeConv) return;
-    joinConversation(activeConv._id);
+    const convId = activeConv?._id;
+    if (!convId) return;
+    // Guard: ensure valid ObjectId (24 hex chars)
+    if (!/^[a-f\d]{24}$/i.test(String(convId))) return;
+    let cancelled = false;
+    joinConversation(convId);
+    // Avoid cached GET (messages must be fresh) and allow refresh retry
     chatService
-      .messages(activeConv._id)
+      .messages(convId)
       .then((r) => {
+        if (cancelled) return;
         setMessages(r.data.messages);
-        // Mark as read
-        chatService.markRead(activeConv._id).catch(() => {});
-        clearUnread(activeConv._id);
-        // Also emit via socket
-        emit('chat:read', { conversationId: activeConv._id });
+        // Mark as read via REST (persists) – navbar badge cleared via clearUnread
+        // Separate from message load so emit failure does not show "Failed to load messages"
+        try {
+          chatService.markRead(convId).catch(() => {});
+          clearUnread(convId);
+          if (emit) emit('chat:read', { conversationId: convId });
+        } catch (e) {
+          if (import.meta.env.DEV) console.warn('[Chat] mark read emit failed:', e?.message);
+        }
       })
-      .catch(() => toast.error('Failed to load messages'));
+      .catch((err) => {
+        if (cancelled) return;
+        const status = err.response?.status;
+        // 401 is handled by api.js refresh interceptor; only toast if refresh failed
+        if (status === 401) return;
+        if (import.meta.env.DEV) console.error('[Chat] load messages failed:', err.response?.data || err.message);
+        // Dedupe duplicate toasts for same conv (StrictMode double-invoke)
+        toast.error('Failed to load messages', { id: `load-msg-${convId}` });
+      });
 
-    return () => leaveConversation(activeConv._id);
+    return () => {
+      cancelled = true;
+      leaveConversation(convId);
+    };
   }, [activeConv?._id]);
 
   // Handle new messages from socket
@@ -129,12 +151,15 @@ export default function Chat() {
   useEffect(() => {
     const handleConvUpdate = () => {
       chatService.conversations().then((r) => {
-        setConversations(r.data.conversations);
-      });
+        const convs = r.data.conversations;
+        setConversations(convs);
+        // Keep global badge in sync after update
+        convs.forEach((c) => setUnread(c._id, c.unreadCounts?.[user._id] || 0));
+      }).catch(() => {});
     };
     on('conversation:update', handleConvUpdate);
     return () => off('conversation:update');
-  }, [on, off]);
+  }, [on, off, setUnread, user._id]);
 
   // Handle read receipts
   useEffect(() => {
@@ -157,6 +182,16 @@ export default function Chat() {
     on('conversation:read', handleRead);
     return () => off('conversation:read');
   }, [activeConv, user._id, on, off]);
+
+  // Socket error feedback (backend emits chat:error on socket send failure)
+  useEffect(() => {
+    const handleChatError = (payload) => {
+      console.error('[Chat] socket error:', payload);
+      toast.error(payload?.message || 'Message failed on server');
+    };
+    on('chat:error', handleChatError);
+    return () => off('chat:error');
+  }, [on, off]);
 
   // Typing indicators
   useEffect(() => {
@@ -182,23 +217,63 @@ export default function Chat() {
   const handleSend = async (e) => {
     e.preventDefault();
     if (!input.trim() || !activeConv) return;
+    if (sending) return;
     const text = input.trim();
+    const convId = activeConv._id;
     setInput('');
     setSending(true);
     try {
-      // Emit via socket — the server persists the message and broadcasts
-      // chat:message to all participants (including sender), which the
-      // socket listener at line 96 adds to the messages array.
-      emit('chat:send', {
-        conversationId: activeConv._id,
-        text,
+      // Prefer REST for reliability — it persists, validates auth, and
+      // benefits from the api.js refresh-token interceptor. Socket is
+      // used for real-time broadcast to other participants.
+      const { data } = await chatService.send({
+        conversationId: convId,
+        content: text,
       });
+      const saved = data.message;
+      // Immediately append own message (REST path does not broadcast to sender)
+      setMessages((prev) => {
+        if (prev.some((m) => m._id === saved._id)) return prev;
+        return [...prev, saved];
+      });
+      // Update conversation preview
+      setConversations((prev) =>
+        prev
+          .map((c) =>
+            c._id === convId
+              ? { ...c, lastMessage: saved, lastMessageAt: saved.createdAt }
+              : c
+          )
+          .sort((a, b) => new Date(b.lastMessageAt) - new Date(a.lastMessageAt))
+      );
       emitStopTyping({
-        conversationId: activeConv._id,
+        conversationId: convId,
         recipientId: activeConv.participants.find((p) => p._id !== user._id)?._id,
       });
-    } catch {
-      toast.error('Failed to send message');
+    } catch (err) {
+      // Restore input so user doesn't lose text
+      setInput(text);
+      const status = err.response?.status;
+      const code = err.response?.data?.code;
+      const serverMsg = err.response?.data?.message;
+      console.error('[Chat] send failed:', { status, code, serverMsg, error: err.message });
+      if (status === 401) {
+        toast.error('Session expired. Please log in again.');
+      } else if (status === 403) {
+        toast.error('Not authorized to send in this conversation.');
+      } else if (status === 404) {
+        toast.error('Conversation not found.');
+      } else if (status === 400) {
+        toast.error(serverMsg || 'Invalid message. Check content and try again.');
+      } else if (status === 429) {
+        toast.error('Too many messages. Please slow down.');
+      } else if (status >= 500) {
+        toast.error('Server error. Please try again.');
+      } else if (!err.response) {
+        toast.error('Cannot reach server. Check backend on port 5000.');
+      } else {
+        toast.error(serverMsg || 'Failed to send message');
+      }
     } finally {
       setSending(false);
     }

@@ -4,6 +4,9 @@ const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
 const { toKey } = require('../utils/mongoId');
 
+// Server-side online users tracking: userId -> Set of socketIds (handles multiple tabs)
+const onlineUsers = new Map();
+
 const setupSocket = (io) => {
   io.use(async (socket, next) => {
     try {
@@ -36,11 +39,26 @@ const setupSocket = (io) => {
 
   io.on('connection', async (socket) => {
     const userId = socket.userId;
-    socket.join(`user:${userId}`);
-    console.log(`[Socket] User ${userId} connected`);
 
-    await User.updateOne({ _id: userId }, { lastSeen: new Date() });
-    io.emit('user:status', { userId, online: true });
+    // Track this socket for the user
+    if (!onlineUsers.has(userId)) {
+      onlineUsers.set(userId, new Set());
+    }
+    onlineUsers.get(userId).add(socket.id);
+
+    // If this is the first socket for this user, broadcast online status
+    if (onlineUsers.get(userId).size === 1) {
+      console.log(`[Socket] User ${userId} came online`);
+      await User.updateOne({ _id: userId }, { lastSeen: new Date() });
+      io.emit('user:status', { userId, online: true });
+    }
+
+    // Send current online users list to the newly connected socket
+    const onlineUserIds = Array.from(onlineUsers.keys());
+    socket.emit('user:online-list', { onlineUsers: onlineUserIds });
+
+    socket.join(`user:${userId}`);
+    console.log(`[Socket] User ${userId} connected (socket: ${socket.id})`);
 
     // Auto-join all conversation rooms for this user
     const conversations = await Conversation.find({ participants: userId }).lean();
@@ -189,11 +207,22 @@ const setupSocket = (io) => {
     });
 
     socket.on('disconnect', async () => {
-      console.log(`[Socket] User ${userId} disconnected`);
-      try {
-        await User.updateOne({ _id: userId }, { lastSeen: new Date() });
-      } catch (_) {}
-      io.emit('user:status', { userId, online: false, lastSeen: new Date() });
+      console.log(`[Socket] User ${userId} disconnected (socket: ${socket.id})`);
+
+      // Remove this socket from the user's socket set
+      const userSockets = onlineUsers.get(userId);
+      if (userSockets) {
+        userSockets.delete(socket.id);
+        // If no more sockets for this user, mark as offline
+        if (userSockets.size === 0) {
+          onlineUsers.delete(userId);
+          console.log(`[Socket] User ${userId} went offline`);
+          try {
+            await User.updateOne({ _id: userId }, { lastSeen: new Date() });
+          } catch (_) {}
+          io.emit('user:status', { userId, online: false, lastSeen: new Date() });
+        }
+      }
     });
   });
 

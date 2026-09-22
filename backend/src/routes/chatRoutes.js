@@ -6,6 +6,7 @@ const {
   getMessages,
   sendMessage,
   markRead,
+  getUnreadCount,
 } = require('../controllers/chatController');
 const { protect } = require('../middleware/auth');
 const { chatLimiter } = require('../middleware/rateLimiters');
@@ -17,6 +18,7 @@ const {
 
 router.use(protect);
 
+router.get('/unread-count', getUnreadCount);
 router.post('/conversations', createConversationValidation, getOrCreateConversation);
 router.get('/conversations', getConversations);
 router.get('/conversations/:id/messages', getMessagesValidation, getMessages);

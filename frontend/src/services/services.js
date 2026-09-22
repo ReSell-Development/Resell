@@ -43,11 +43,12 @@ export const favoriteService = {
 };
 
 export const chatService = {
-  conversations: () => api.get('/chat/conversations'),
+  conversations: () => api.get('/chat/conversations', { _noCache: true }),
   createConversation: (data) => api.post('/chat/conversations', data),
-  messages: (id, params) => api.get(`/chat/conversations/${id}/messages`, { params }),
+  messages: (id, params) => api.get(`/chat/conversations/${id}/messages`, { params, _noCache: true }),
   send: (data) => api.post('/chat/messages', data),
   markRead: (id) => api.post(`/chat/conversations/${id}/read`),
+  unreadCount: () => api.get('/chat/unread-count', { _noCache: true }),
 };
 
 export const reportService = {

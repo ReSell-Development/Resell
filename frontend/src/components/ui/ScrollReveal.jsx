@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 
 export function ScrollReveal({
@@ -146,5 +146,3 @@ export function RevealOnScroll({
     </div>
   );
 }
-
-import React from 'react';

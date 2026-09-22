@@ -149,20 +149,39 @@ const logout = async (req, res) => {
 const refreshAccessToken = async (req, res, next) => {
   try {
     const refreshToken = req.cookies?.refresh_token;
+
+    // No refresh token present — clear stale cookies and signal the client to
+    // stop retrying immediately (distinct code: REFRESH_TOKEN_MISSING).
     if (!refreshToken) {
-      throw new AppError('No refresh token', 401, 'UNAUTHORIZED');
+      clearTokenCookies(res);
+      return res.status(401).json({
+        success: false,
+        message: 'Refresh token missing',
+        code: 'REFRESH_TOKEN_MISSING',
+      });
     }
 
     let decoded;
     try {
       decoded = verifyToken(refreshToken);
     } catch {
-      throw new AppError('Invalid or expired refresh token', 401, 'TOKEN_INVALID');
+      // Invalid or expired — clear cookies so the browser won't keep sending them.
+      clearTokenCookies(res);
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid or expired refresh token',
+        code: 'REFRESH_TOKEN_INVALID',
+      });
     }
 
     const user = await User.findById(decoded.id);
     if (!user || !user.isActive) {
-      throw new AppError('User no longer exists or is inactive', 401, 'UNAUTHORIZED');
+      clearTokenCookies(res);
+      return res.status(401).json({
+        success: false,
+        message: 'User no longer exists or is inactive',
+        code: 'REFRESH_TOKEN_INVALID',
+      });
     }
 
     const newAccessToken = generateToken({ id: user._id, role: user.role });
@@ -170,7 +189,10 @@ const refreshAccessToken = async (req, res, next) => {
 
     setTokenCookies(res, newAccessToken, newRefreshToken);
 
-    res.json({ success: true, user: { _id: user._id, name: user.name, email: user.email, role: user.role } });
+    res.json({
+      success: true,
+      user: { _id: user._id, name: user.name, email: user.email, role: user.role },
+    });
   } catch (err) {
     next(err);
   }
