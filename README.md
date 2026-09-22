@@ -189,9 +189,6 @@ ReSell/
 │   ├── package.json                # scripts: start/dev/seed/test/worker/worker:price
 │   ├── .env.example
 │   ├── .env                        # local (gitignored)
-│   ├── scripts/
-│   │   ├── portGuard.js
-│   │   └── restartBackend.js
 │   └── src/
 │       ├── server.js               # Express app + Socket.io + rate limiters + graceful shutdown
 │       ├── config/
@@ -268,7 +265,6 @@ ReSell/
 │       ├── sockets/
 │       │   └── index.js            # Socket.io auth + rooms + chat events
 │       ├── scripts/
-│       │   ├── seedDemo.js
 │       │   └── validate-duplicate-threshold.js
 │       ├── utils/
 │       │   ├── jwt.js              # generateToken/verifyToken/setTokenCookies
