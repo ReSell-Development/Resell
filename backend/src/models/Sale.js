@@ -35,6 +35,7 @@ const saleSchema = new mongoose.Schema(
     product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true, index: true },
     seller: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     buyer: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+    offer: { type: mongoose.Schema.Types.ObjectId, ref: 'Offer', default: null, index: true },
     salePrice: { type: Number, required: true, min: [1, 'Sale price must be positive'] },
     platformFee: { type: Number, default: 0, min: 0 },
     netAmount: { type: Number, required: true },

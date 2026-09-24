@@ -1,8 +1,8 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import toast from 'react-hot-toast';
-import { ArrowLeftRight, Check, X, CornerUpLeft, Undo2, ArrowRight, Loader2 } from 'lucide-react';
+import { ArrowLeftRight, Check, X, CornerUpLeft, Undo2, ArrowRight, CreditCard, Loader2 } from 'lucide-react';
 import { offerService } from '../services/services';
 import PageTransition from '../components/layout/PageTransition';
 import EmptyState from '../components/ui/EmptyState';
@@ -26,6 +26,7 @@ function OfferCard({ offer, mode, user, onAction }) {
   const [countering, setCountering] = useState(false);
   const [counterAmount, setCounterAmount] = useState('');
   const [busy, setBusy] = useState(false);
+  const navigate = useNavigate();
 
   const status = STATUS_STYLES[offer.status] || STATUS_STYLES.pending;
   const isSeller = mode === 'received';
@@ -136,6 +137,18 @@ function OfferCard({ offer, mode, user, onAction }) {
                 <Undo2 className="w-3.5 h-3.5" /> Withdraw
               </button>
             )}
+          </div>
+        )}
+
+        {!isSeller && offer.status === 'accepted' && product._id && (
+          <div className="mt-3">
+            <button
+              type="button"
+              onClick={() => navigate(`/checkout/${product._id}?offer=${offer._id}`)}
+              className="btn-primary text-xs px-3 py-1.5 inline-flex items-center gap-1"
+            >
+              <CreditCard className="w-3.5 h-3.5" /> Pay {formatPrice(offer.amount, offer.currencyCode || 'USD')}
+            </button>
           </div>
         )}
 

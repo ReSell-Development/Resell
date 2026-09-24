@@ -18,11 +18,15 @@ function calculateFee(amount) {
   return { platformFee: fee, netAmount: amount - fee };
 }
 
-async function createCheckoutSession({ product, buyer, shippingAddress }) {
+async function createCheckoutSession({ product, buyer, shippingAddress, offer = null }) {
   const stripe = getStripe();
   if (!stripe) throw new Error('Stripe is not configured. Set STRIPE_SECRET_KEY.');
 
-  const { platformFee, netAmount } = calculateFee(product.price);
+  // When an accepted offer applies, the negotiated amount replaces the
+  // listed price everywhere: the Stripe charge, the platform fee and
+  // the recorded sale price.
+  const amount = offer ? offer.amount : product.price;
+  const { platformFee, netAmount } = calculateFee(amount);
 
   const session = await stripe.checkout.sessions.create({
     payment_method_types: ['card'],
@@ -36,7 +40,7 @@ async function createCheckoutSession({ product, buyer, shippingAddress }) {
             description: product.description?.slice(0, 500) || '',
             images: product.images?.length > 0 ? [product.images[0].url] : [],
           },
-          unit_amount: product.price,
+          unit_amount: amount,
         },
         quantity: 1,
       },
@@ -45,6 +49,7 @@ async function createCheckoutSession({ product, buyer, shippingAddress }) {
       productId: product._id.toString(),
       buyerId: buyer._id.toString(),
       sellerId: product.seller.toString(),
+      ...(offer ? { offerId: offer._id.toString() } : {}),
     },
     success_url: `${process.env.CLIENT_URL || 'http://localhost:3000'}/order-success?session_id={CHECKOUT_SESSION_ID}`,
     cancel_url: `${process.env.CLIENT_URL || 'http://localhost:3000'}/checkout/${product._id}?cancelled=true`,
@@ -54,7 +59,8 @@ async function createCheckoutSession({ product, buyer, shippingAddress }) {
     product: product._id,
     seller: product.seller,
     buyer: buyer._id,
-    salePrice: product.price,
+    offer: offer ? offer._id : null,
+    salePrice: amount,
     platformFee,
     netAmount,
     currencyCode: product.currencyCode || 'USD',
@@ -83,9 +89,11 @@ async function handleCheckoutCompleted(event) {
     return { processed: false, reason: 'already_processed' };
   }
 
-  // Lock the product atomically
+  // Lock the product atomically. Accept 'pending' because our own
+  // checkout flow holds the product in 'pending' while the session is
+  // open — the Sale row remains the source of truth for the pairing.
   const product = await Product.findOneAndUpdate(
-    { _id: productId, status: 'active' },
+    { _id: productId, status: { $in: ['active', 'pending'] } },
     { $set: { status: 'sold' } },
     { new: true }
   );
@@ -101,6 +109,33 @@ async function handleCheckoutCompleted(event) {
     sale.paymentStatus = 'failed';
     await sale.save();
     return { processed: false, reason: 'product_unavailable' };
+  }
+
+  // Verify the captured amount matches what this sale was created for.
+  // The Sale is the source of truth for the negotiated price — metadata
+  // offerId from the client is never used as authorization here.
+  if (
+    session.amount_total !== undefined &&
+    session.amount_total !== null &&
+    Number(session.amount_total) !== Number(sale.salePrice)
+  ) {
+    console.error(
+      `[Stripe] Amount mismatch for sale ${sale._id}: expected ${sale.salePrice}, got ${session.amount_total} — refunding`
+    );
+    const stripe = getStripe();
+    if (stripe && session.payment_intent) {
+      await stripe.refunds.create({ payment_intent: session.payment_intent });
+    }
+    // Release the product lock this sale was holding
+    await Product.findByIdAndUpdate(sale.product, { status: 'active' });
+    sale.transition(
+      'payment_failed',
+      null,
+      `Amount mismatch: expected ${sale.salePrice}, received ${session.amount_total}`
+    );
+    sale.paymentStatus = 'failed';
+    await sale.save();
+    return { processed: false, reason: 'amount_mismatch' };
   }
 
   sale.transition('paid', null, `Stripe payment confirmed: ${session.payment_intent}`);

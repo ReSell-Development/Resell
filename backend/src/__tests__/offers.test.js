@@ -203,6 +203,43 @@ describe('Offers — authorization & transitions', () => {
     });
   });
 
+  describe('GET /offers/:id', () => {
+    it('lets the buyer view their own offer', async () => {
+      const { body } = await makeOffer(buyerToken).expect(201);
+      const res = await request(app)
+        .get(`/api/offers/${body.offer._id}`)
+        .set('Authorization', `Bearer ${buyerToken}`)
+        .expect(200);
+      expect(res.body.offer._id).toBe(body.offer._id);
+      expect(res.body.offer.amount).toBe(400);
+    });
+
+    it('lets the seller view the offer', async () => {
+      const { body } = await makeOffer(buyerToken).expect(201);
+      await request(app)
+        .get(`/api/offers/${body.offer._id}`)
+        .set('Authorization', `Bearer ${sellerToken}`)
+        .expect(200);
+    });
+
+    it('forbids an unrelated third user', async () => {
+      const { body } = await makeOffer(buyerToken).expect(201);
+      const res = await request(app)
+        .get(`/api/offers/${body.offer._id}`)
+        .set('Authorization', `Bearer ${thirdToken}`)
+        .expect(403);
+      expect(res.body.code).toBe('FORBIDDEN');
+    });
+
+    it('returns 404 for an unknown offer', async () => {
+      const fakeId = new mongoose.Types.ObjectId().toString();
+      await request(app)
+        .get(`/api/offers/${fakeId}`)
+        .set('Authorization', `Bearer ${buyerToken}`)
+        .expect(404);
+    });
+  });
+
   describe('Dedicated accept/reject endpoints stay seller-only', () => {
     it('accept endpoint rejects non-sellers', async () => {
       const { body } = await makeOffer(buyerToken).expect(201);

@@ -5,6 +5,7 @@ const {
   listOffers,
   getMyOffers,
   getReceivedOffers,
+  getOffer,
   updateOffer,
   acceptOffer,
   rejectOffer,
@@ -19,6 +20,7 @@ router.post('/', createOfferValidation, createOffer);
 router.get('/', authorize('admin'), listOffers);
 router.get('/mine', getMyOffers);
 router.get('/received', getReceivedOffers);
+router.get('/:id', getOffer);
 router.put('/:id', updateOffer);
 router.post('/:id/accept', acceptOffer);
 router.post('/:id/reject', rejectOffer);

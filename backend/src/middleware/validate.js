@@ -200,6 +200,7 @@ const counterOfferValidation = [
 
 const createCheckoutSessionValidation = [
   body('productId').notEmpty().withMessage('Product ID is required').isMongoId().withMessage('Invalid product ID'),
+  body('offerId').optional().isMongoId().withMessage('Invalid offer ID'),
   body('shippingAddress').optional().isObject().withMessage('Shipping address must be an object'),
   body('shippingAddress.fullName').optional().isString().trim().notEmpty(),
   body('shippingAddress.phone').optional().isString().trim().notEmpty(),

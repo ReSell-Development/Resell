@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { CreditCard, Loader2, Shield, ArrowLeft } from 'lucide-react';
+import { CreditCard, Loader2, Shield, ArrowLeft, Tag } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { checkoutService, productService } from '../services/services';
+import { checkoutService, productService, offerService } from '../services/services';
 import { useAuth } from '../contexts/AuthContext';
 import useFormatPrice from '../hooks/useFormatPrice';
 import DeliveryAddressForm from '../components/checkout/DeliveryAddressForm';
@@ -12,9 +12,12 @@ import Loader from '../components/ui/Loader';
 
 export default function Checkout() {
   const { id } = useParams();
+  const [searchParams] = useSearchParams();
+  const offerId = searchParams.get('offer');
   const navigate = useNavigate();
   const { user } = useAuth();
   const [product, setProduct] = useState(null);
+  const [offer, setOffer] = useState(null);
   const [loading, setLoading] = useState(true);
   const [step, setStep] = useState('address'); // address | review | processing
   const [address, setAddress] = useState(null);
@@ -30,8 +33,26 @@ export default function Checkout() {
     });
   }, [id]);
 
-  const platformFee = Math.round((product?.price || 0) * 0.05);
-  const total = (product?.price || 0) + platformFee;
+  // Load the accepted offer so the negotiated amount can be shown.
+  // The backend re-validates the offer and sets the real Stripe charge —
+  // this display amount never determines what the buyer is charged.
+  useEffect(() => {
+    if (!offerId) return;
+    offerService.get(offerId)
+      .then((r) => {
+        const o = r.data.offer;
+        if (o.status !== 'accepted') {
+          toast.error('This offer is no longer accepted — paying list price');
+          return;
+        }
+        setOffer(o);
+      })
+      .catch(() => toast.error('Could not load your offer — paying list price'));
+  }, [offerId]);
+
+  const itemPrice = offer ? offer.amount : product?.price || 0;
+  const platformFee = Math.round(itemPrice * 0.05);
+  const total = itemPrice + platformFee;
   const formatPrice = useFormatPrice(product?.currencyCode || 'USD');
 
   const handleAddressConfirm = (addr) => {
@@ -45,6 +66,7 @@ export default function Checkout() {
       const { data } = await checkoutService.createSession({
         productId: id,
         shippingAddress: address,
+        ...(offer ? { offerId: offer._id } : {}),
       });
       // Redirect to Stripe Checkout
       window.location.href = data.url;
@@ -92,14 +114,19 @@ export default function Checkout() {
                 <div className="flex-1">
                   <p className="font-medium">{product.title}</p>
                   <p className="text-sm text-slate-500">{product.category?.name}</p>
+                  {offer && (
+                    <p className="text-xs text-emerald-600 mt-1 inline-flex items-center gap-1">
+                      <Tag className="w-3 h-3" /> Accepted offer applied
+                    </p>
+                  )}
                 </div>
-                <p className="font-semibold">{formatPrice(product.price)}</p>
+                <p className="font-semibold">{formatPrice(itemPrice)}</p>
               </div>
 
               <div className="border-t border-slate-100 pt-4 space-y-2 text-sm">
                 <div className="flex justify-between">
                   <span className="text-slate-500">Item price</span>
-                  <span>{formatPrice(product.price)}</span>
+                  <span>{formatPrice(itemPrice)}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-slate-500">Platform fee (5%)</span>

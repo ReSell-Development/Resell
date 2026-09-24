@@ -101,6 +101,29 @@ const getReceivedOffers = async (req, res, next) => {
   }
 };
 
+const getOffer = async (req, res, next) => {
+  try {
+    const offer = await Offer.findById(req.params.id)
+      .populate('product', 'title images price currencyCode status')
+      .populate('buyer', 'name avatar')
+      .populate('seller', 'name avatar');
+
+    if (!offer) throw new AppError('Offer not found', 404, 'NOT_FOUND');
+
+    // Only the offer's buyer, its seller, or an admin may view it
+    const isBuyer = offer.buyer._id.toString() === req.user._id.toString();
+    const isSeller = offer.seller._id.toString() === req.user._id.toString();
+    const isAdmin = req.user.role === 'admin';
+    if (!isBuyer && !isSeller && !isAdmin) {
+      throw new AppError('Not authorized to view this offer', 403, 'FORBIDDEN');
+    }
+
+    res.json({ success: true, offer });
+  } catch (err) {
+    next(err);
+  }
+};
+
 const updateOffer = async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -260,6 +283,7 @@ module.exports = {
   listOffers,
   getMyOffers,
   getReceivedOffers,
+  getOffer,
   updateOffer,
   acceptOffer,
   rejectOffer,

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 import { render, screen, waitFor, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom';
 
 vi.mock('../../services/services', () => ({
   offerService: {
@@ -87,6 +87,23 @@ const sentOffer = {
   seller: { _id: 's1', name: 'Seller Sam' },
 };
 
+const acceptedSentOffer = {
+  _id: 'o3',
+  status: 'accepted',
+  amount: 350,
+  currencyCode: 'USD',
+  message: '',
+  createdAt: new Date().toISOString(),
+  product: {
+    _id: 'p3',
+    title: 'Wireless Mouse',
+    price: 400,
+    images: [],
+  },
+  buyer: { _id: 'u1', name: 'Test User' },
+  seller: { _id: 's1', name: 'Seller Sam' },
+};
+
 const renderOffers = () =>
   render(
     <MemoryRouter>
@@ -129,7 +146,7 @@ beforeAll(() => {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(offerService.received).mockResolvedValue({ data: { offers: [receivedOffer] } });
-  vi.mocked(offerService.mine).mockResolvedValue({ data: { offers: [sentOffer] } });
+  vi.mocked(offerService.mine).mockResolvedValue({ data: { offers: [sentOffer, acceptedSentOffer] } });
   vi.mocked(offerService.accept).mockResolvedValue({ data: {} });
   vi.mocked(offerService.reject).mockResolvedValue({ data: {} });
   vi.mocked(offerService.update).mockResolvedValue({ data: {} });
@@ -199,6 +216,47 @@ describe('Offers page', () => {
 
     await waitFor(() =>
       expect(offerService.update).toHaveBeenCalledWith('o2', { status: 'withdrawn' })
+    );
+  });
+
+  it('shows a Pay now action for an accepted sent offer', async () => {
+    const user = userEvent.setup();
+    renderOffers();
+
+    expect(await screen.findByText('Vintage Camera')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Sent' }));
+
+    expect(await screen.findByText('Wireless Mouse')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /pay \$350/i })).toBeInTheDocument();
+    // Pending sent offers still show Withdraw, accepted ones do not need it
+    expect(screen.getAllByRole('button', { name: 'Withdraw' })).toHaveLength(1);
+  });
+
+  it('Pay now navigates to checkout with the offer id', async () => {
+    const user = userEvent.setup();
+
+    const LocationProbe = () => {
+      const location = useLocation();
+      return <div data-testid="checkout-location">{location.pathname}{location.search}</div>;
+    };
+
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <Routes>
+          <Route path="/" element={<Offers />} />
+          <Route path="/checkout/:id" element={<LocationProbe />} />
+        </Routes>
+      </MemoryRouter>
+    );
+
+    expect(await screen.findByText('Vintage Camera')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Sent' }));
+    expect(await screen.findByText('Wireless Mouse')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /pay \$350/i }));
+
+    expect(await screen.findByTestId('checkout-location')).toHaveTextContent(
+      '/checkout/p3?offer=o3'
     );
   });
 });

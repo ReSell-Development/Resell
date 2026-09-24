@@ -5,6 +5,7 @@ const User = require('../models/User');
 const Product = require('../models/Product');
 const Category = require('../models/Category');
 const Sale = require('../models/Sale');
+const Offer = require('../models/Offer');
 const { createUser } = require('./helpers');
 
 // Mock Stripe SDK
@@ -113,6 +114,36 @@ describe('Order Routes', () => {
         .get(`/api/orders/${sale._id}`)
         .set('Authorization', `Bearer ${other.token}`)
         .expect(403);
+    });
+
+    it('preserves the negotiated salePrice for an order created from an offer', async () => {
+      const offer = await Offer.create({
+        product: productId,
+        buyer: buyerId,
+        seller: sellerId,
+        amount: 2400,
+        currencyCode: 'USD',
+        status: 'accepted',
+        history: [{ status: 'accepted', actor: sellerId, at: new Date() }],
+      });
+
+      const sale = await createSale({
+        offer: offer._id,
+        salePrice: 2400,
+        platformFee: 120,
+        netAmount: 2280,
+      });
+
+      const res = await request(app)
+        .get(`/api/orders/${sale._id}`)
+        .set('Authorization', `Bearer ${buyerToken}`)
+        .expect(200);
+      expect(res.body.order.salePrice).toBe(2400);
+      expect(res.body.order.platformFee).toBe(120);
+      expect(res.body.order.netAmount).toBe(2280);
+      expect(res.body.order.offer.toString()).toBe(offer._id.toString());
+      // Listed price is NOT what the buyer paid
+      expect(res.body.order.salePrice).not.toBe(3000);
     });
   });
 

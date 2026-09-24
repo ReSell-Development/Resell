@@ -67,6 +67,7 @@ export const sellerService = {
 export const offerService = {
   create: (data) => api.post('/offers', data),
   list: (params) => api.get('/offers', { params }),
+  get: (id) => api.get(`/offers/${id}`),
   mine: () => api.get('/offers/mine'),
   received: () => api.get('/offers/received'),
   update: (id, data) => api.put(`/offers/${id}`, data),
