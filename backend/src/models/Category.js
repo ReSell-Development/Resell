@@ -9,6 +9,9 @@ const categorySchema = new mongoose.Schema(
     image: { type: String, default: '' },
     parent: { type: mongoose.Schema.Types.ObjectId, ref: 'Category', default: null },
     isActive: { type: Boolean, default: true },
+    // Categories like phones/laptops/vehicles/cameras/consoles collect a
+    // serial number/IMEI/VIN for physical-product identity verification
+    requiresIdentifier: { type: Boolean, default: false },
   },
   { timestamps: true }
 );

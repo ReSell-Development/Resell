@@ -108,6 +108,20 @@ async function handleCheckoutCompleted(event) {
   sale.stripePaymentIntentId = session.payment_intent;
   await sale.save();
 
+  // Provenance: product sold event for tracked identities (best-effort)
+  try {
+    const { recordSaleProvenance } = require('./identityVerification');
+    await recordSaleProvenance({
+      productId,
+      sellerId,
+      buyerId,
+      transactionId: session.payment_intent,
+      eventType: 'sold',
+    });
+  } catch (err) {
+    console.error('[Stripe] Provenance event failed:', err.message);
+  }
+
   return { processed: true, saleId: sale._id };
 }
 

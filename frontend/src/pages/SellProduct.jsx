@@ -78,13 +78,18 @@ export default function SellProduct() {
     yearsUsed: 0,
     specifications: [],
     location: { city: '', state: '', country: '' },
+    identifier: '',
+    identifierType: 'serial',
   });
   const [aiAnalysis, setAiAnalysis] = useState(null);
+  const [identityStatus, setIdentityStatus] = useState(null);
   const [priceSuggestion, setPriceSuggestion] = useState(null);
   const [categoryAutoFilled, setCategoryAutoFilled] = useState(false);
   const [submitAttempted, setSubmitAttempted] = useState(false);
 
   const currencyMeta = SUPPORTED_CURRENCIES.find((c) => c.code === selectedCurrency) || SUPPORTED_CURRENCIES.find((c) => c.code === 'INR');
+  const selectedCategory = categories.find((c) => c._id === form.category);
+  const identifierRequired = !!selectedCategory?.requiresIdentifier;
 
   const handleCurrencyChange = useCallback((newCurrency) => {
     if (newCurrency === selectedCurrency) return;
@@ -316,9 +321,21 @@ export default function SellProduct() {
           ...(img.mirrorHash ? { mirrorHash: img.mirrorHash } : {}),
         })),
         specifications: form.specifications.filter((s) => s.key?.trim() && s.value?.trim()).map((s) => ({ key: s.key.trim(), value: s.value.trim() })),
+        ...(form.identifier?.trim() ? { identifier: form.identifier.trim(), identifierType: form.identifierType } : {}),
       };
 
       const { data } = await productService.create(payload);
+      if (data.identityStatus) {
+        setIdentityStatus(data.identityStatus);
+        for (const warning of data.identityStatus.warnings || []) {
+          toast.error(warning);
+        }
+        if (data.identityStatus.verification?.verificationCode) {
+          toast.success(
+            `Ownership tracking enabled. Upload a photo of the physical product showing code ${data.identityStatus.verification.verificationCode} (and the serial/IMEI where possible) on the product page to verify possession. Code valid for 24 hours.`
+          );
+        }
+      }
       toast.success('Listing published!');
       navigate(`/product/${data.product._id}`);
     } catch (err) {
@@ -644,6 +661,47 @@ export default function SellProduct() {
                       <p className="text-xs text-slate-400 mt-2">Stored as INR. Price guidance will convert automatically.</p>
                     </div>
 
+                    {/* Product identity (only for supported categories) */}
+                    {(identifierRequired || form.identifier?.trim()) && (
+                      <div className="p-4 rounded-xl bg-slate-50 border border-slate-200">
+                        <div className="flex items-center justify-between mb-2">
+                          <label className="text-sm font-medium flex items-center gap-1">
+                            <Shield className="w-4 h-4 text-brand-500" />
+                            Serial / IMEI / VIN {identifierRequired ? '*' : '(optional)'}
+                          </label>
+                          <span className="text-xs text-slate-400">Hashed securely — never shown publicly</span>
+                        </div>
+                        <div className="grid sm:grid-cols-2 gap-3">
+                          <select
+                            value={form.identifierType}
+                            onChange={(e) => setForm({ ...form, identifierType: e.target.value })}
+                            className="input"
+                          >
+                            <option value="serial">Serial Number</option>
+                            <option value="imei">IMEI (phones)</option>
+                            <option value="vin">VIN (vehicles)</option>
+                          </select>
+                          <input
+                            type="text"
+                            value={form.identifier}
+                            onChange={(e) => setForm({ ...form, identifier: e.target.value })}
+                            placeholder="e.g. 356938035643809"
+                            className="input"
+                          />
+                        </div>
+                        {identityStatus && (
+                          <p className={cn('text-xs mt-2', identityStatus.warnings?.length ? 'text-amber-600' : 'text-emerald-600')}>
+                            {identityStatus.warnings?.length
+                              ? `Identity status: ${identityStatus.status.replace('_', ' ')} — ${identityStatus.warnings[0]}`
+                              : `Possession: ${(identityStatus.verification?.possessionStatus || 'unverified').replace('_', ' ')}. Upload a proof photo with the code on the product page to verify.`}
+                          </p>
+                        )}
+                        <p className="text-xs text-slate-400 mt-1">
+                          Used to verify physical ownership and prevent resale of stolen goods.
+                        </p>
+                      </div>
+                    )}
+
                     <div>
                       <div className="flex items-center justify-between mb-2">
                         <label className="text-sm font-medium">Location</label>
@@ -890,6 +948,14 @@ export default function SellProduct() {
                         </motion.p>
                         {(form.location.city || form.location.country) && (
                           <p className="text-xs text-slate-500">{[form.location.city, form.location.state, form.location.country].filter(Boolean).join(', ')}</p>
+                        )}
+                        {identityStatus && (
+                          <div className={cn('text-xs p-2 rounded-lg', identityStatus.warnings?.length ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700')}>
+                            <span className="font-medium">Identity verification:</span>{' '}
+                            {identityStatus.warnings?.length
+                              ? `${identityStatus.status.replace('_', ' ')} — review required`
+                              : 'verified ownership registered'}
+                          </div>
                         )}
                       </div>
                     </div>
