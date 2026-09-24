@@ -109,8 +109,39 @@ const updateOffer = async (req, res, next) => {
     const offer = await Offer.findById(id);
     if (!offer) throw new AppError('Offer not found', 404, 'NOT_FOUND');
 
+    // Authorization: only the offer creator (buyer) or the listing's
+    // seller may touch this offer — third parties are forbidden even
+    // if they know the offer id.
+    const isBuyer = offer.buyer.toString() === req.user._id.toString();
+    const isSeller = offer.seller.toString() === req.user._id.toString();
+    if (!isBuyer && !isSeller) {
+      throw new AppError('Not authorized to update this offer', 403, 'FORBIDDEN');
+    }
+
+    // Preserve the model's state-transition rules
     if (!offer.canTransition(status)) {
       throw new AppError(`Cannot transition from ${offer.status} to ${status}`, 400, 'INVALID_TRANSITION');
+    }
+
+    // Role-restricted transitions on top of the state rules:
+    //   buyer  -> withdrawn (cancel their own offer)
+    //   seller -> accepted | rejected
+    //   countered must go through POST /offers/:id/counter (needs an amount)
+    //   expired is system-driven only
+    if (status === 'withdrawn' && !isBuyer) {
+      throw new AppError('Only the buyer can withdraw this offer', 403, 'FORBIDDEN');
+    }
+    if ((status === 'accepted' || status === 'rejected') && !isSeller) {
+      throw new AppError('Only the seller can accept or reject this offer', 403, 'FORBIDDEN');
+    }
+    if (status === 'countered' || status === 'expired') {
+      throw new AppError(
+        status === 'countered'
+          ? 'Use POST /offers/:id/counter to counter an offer'
+          : 'Offers expire automatically and cannot be expired manually',
+        400,
+        'INVALID_TRANSITION'
+      );
     }
 
     offer.status = status;
@@ -187,6 +218,13 @@ const counterOffer = async (req, res, next) => {
 
     const original = await Offer.findById(id);
     if (!original) throw new AppError('Offer not found', 404, 'NOT_FOUND');
+
+    // Authorization: only the listing's seller can counter a buyer's
+    // offer — third parties (and the buyer themself) are forbidden.
+    if (original.seller.toString() !== req.user._id.toString()) {
+      throw new AppError('Only the seller can counter this offer', 403, 'FORBIDDEN');
+    }
+
     if (!original.canTransition('countered')) {
       throw new AppError(`Cannot counter offer in ${original.status} status`, 400, 'INVALID_TRANSITION');
     }

@@ -16,6 +16,7 @@ const ProductDetail = lazy(() => import('./pages/ProductDetail'));
 const SellProduct = lazy(() => import('./pages/SellProduct'));
 const EditProduct = lazy(() => import('./pages/EditProduct'));
 const Favorites = lazy(() => import('./pages/Favorites'));
+const Offers = lazy(() => import('./pages/Offers'));
 const MyProducts = lazy(() => import('./pages/MyProducts'));
 const Profile = lazy(() => import('./pages/Profile'));
 const SellerProfile = lazy(() => import('./pages/SellerProfile'));
@@ -139,6 +140,14 @@ function App() {
                 element={
                   <ProtectedRoute>
                     <Favorites />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/offers"
+                element={
+                  <ProtectedRoute>
+                    <Offers />
                   </ProtectedRoute>
                 }
               />
