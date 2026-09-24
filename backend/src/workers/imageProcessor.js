@@ -1,5 +1,5 @@
 const { Worker } = require('bullmq');
-const { connection } = require('../queues');
+const queues = require('../queues');
 const Product = require('../models/Product');
 const Category = require('../models/Category');
 const { perceptualHashFromBuffer } = require('../services/imageHash');
@@ -9,9 +9,22 @@ const cvProvider = createCVProvider();
 const { calculateRecommendedPrice } = require('../services/priceRecommendation');
 const { detectRisk } = require('../services/fraudDetection');
 
-const imageProcessingWorker = new Worker(
-  'image-processing',
-  async (job) => {
+(async () => {
+  // The queue module resolves its shared Redis connection asynchronously —
+  // wait for it before constructing the BullMQ Worker. Exit non-zero when
+  // Redis is unavailable so the container restart policy retries.
+  try {
+    await queues.whenConnected;
+  } catch (err) {
+    console.error('[Worker] Redis unavailable, exiting:', err.message);
+    process.exit(1);
+  }
+
+  const { connection } = queues;
+
+  const imageProcessingWorker = new Worker(
+    'image-processing',
+    async (job) => {
     const { productId, images, productData } = job.data;
 
     try {
@@ -200,24 +213,25 @@ const imageProcessingWorker = new Worker(
   }
 );
 
-imageProcessingWorker.on('completed', (job) => {
-  console.log(`[Worker] Job ${job.id} completed`);
-});
+  imageProcessingWorker.on('completed', (job) => {
+    console.log(`[Worker] Job ${job.id} completed`);
+  });
 
-imageProcessingWorker.on('failed', (job, err) => {
-  console.error(`[Worker] Job ${job?.id} failed:`, err.message);
-});
+  imageProcessingWorker.on('failed', (job, err) => {
+    console.error(`[Worker] Job ${job?.id} failed:`, err.message);
+  });
 
-console.log('[Worker] Image processing worker started');
+  console.log('[Worker] Image processing worker started');
 
-process.on('SIGINT', async () => {
-  console.log('[Worker] Shutting down...');
-  await imageProcessingWorker.close();
-  process.exit(0);
-});
+  process.on('SIGINT', async () => {
+    console.log('[Worker] Shutting down...');
+    await imageProcessingWorker.close();
+    process.exit(0);
+  });
 
-process.on('SIGTERM', async () => {
-  console.log('[Worker] Shutting down...');
-  await imageProcessingWorker.close();
-  process.exit(0);
-});
+  process.on('SIGTERM', async () => {
+    console.log('[Worker] Shutting down...');
+    await imageProcessingWorker.close();
+    process.exit(0);
+  });
+})();

@@ -34,6 +34,7 @@ if (isTest) {
     imageProcessingQueue: noopQueue,
     priceAnalysisQueue: noopQueue,
     registerSweepJob: noop,
+    whenConnected: async () => null,
   };
 } else {
   // Exported values — start as no-ops; replaced below if Redis is reachable.
@@ -43,6 +44,19 @@ if (isTest) {
     priceAnalysisQueue: noopQueue,
     registerSweepJob: noop,
   };
+
+  // Resolves once the Redis probe succeeds and the shared connection is
+  // available. Workers must await this before constructing BullMQ Workers —
+  // the connection property is populated asynchronously, so reading it at
+  // module load time yields null. Rejects when Redis is unreachable so
+  // worker processes exit non-zero and their restart policy retries.
+  queueExports.whenConnected = new Promise((resolve, reject) => {
+    queueExports._resolveConnected = resolve;
+    queueExports._rejectConnected = reject;
+  });
+  // Mark rejection as handled so processes that never await (the API) do not
+  // trip Node's unhandled-rejection handling when Redis is offline.
+  queueExports.whenConnected.catch(() => {});
 
   // Probe Redis with a raw TCP connect so ioredis/BullMQ are never created
   // unless Redis is actually available. This prevents BullMQ's internal
@@ -58,6 +72,7 @@ if (isTest) {
 
       if (!reachable) {
         console.warn('[Queue] Redis unavailable — queues disabled. Background jobs will not run.');
+        queueExports._rejectConnected(new Error('Redis unavailable'));
         return;
       }
 
@@ -100,6 +115,9 @@ if (isTest) {
       queueExports.imageProcessingQueue = imageProcessingQueue;
       queueExports.priceAnalysisQueue = priceAnalysisQueue;
 
+      // The shared connection is now available — unblock worker startup
+      queueExports._resolveConnected(connection);
+
       // Register the sweep as a repeatable job (every 10 minutes).
       const SWEEP_INTERVAL_MS = 10 * 60 * 1000;
       queueExports.registerSweepJob = async function registerSweepJob() {
@@ -124,6 +142,7 @@ if (isTest) {
     } catch (err) {
       // Catch-all so nothing here can ever reach the process-level handler.
       console.warn(`[Queue] Unexpected error during queue setup: ${err.message}`);
+      queueExports._rejectConnected(err);
     }
   })();
 

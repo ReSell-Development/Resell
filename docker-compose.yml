@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # MongoDB Database
   mongodb:
@@ -68,6 +66,9 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    # Shared by the worker services below — Compose builds this image once
+    # and all three services (API + workers) reuse it. No extra Dockerfiles.
+    image: resell-backend:latest
     container_name: resell-backend
     ports:
       - "3000:3000"
@@ -102,6 +103,66 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+    networks:
+      - resell-network
+
+  # AI / image-analysis worker — processes the "image-processing" BullMQ queue
+  # (perceptual hashing, CV condition/damage/classification, CNN feature
+  # extraction via the ML service, price recommendation + fraud re-score).
+  # Entry point matches the existing `npm run worker` package script
+  # (node src/workers/imageProcessor.js); node is invoked directly so
+  # SIGTERM reaches the worker's graceful-shutdown handler.
+  worker-image:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: resell-backend:latest
+    container_name: resell-worker-image
+    command: ["node", "src/workers/imageProcessor.js"]
+    environment:
+      - NODE_ENV=production
+      - MONGODB_URI=mongodb://mongodb:27017/resell
+      - REDIS_URL=redis://redis:6379
+      - ML_SERVICE_URL=http://ml-service:5000
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ml-service:
+        condition: service_healthy
+    restart: unless-stopped
+    # Workers expose no HTTP port — disable the API image's inherited healthcheck
+    healthcheck:
+      disable: true
+    networks:
+      - resell-network
+
+  # Price / duplicate-processing worker — processes the "price-analysis"
+  # BullMQ queue (single-product price refinement + the periodic
+  # price-refinement-sweep enqueued by the API).
+  # Entry point matches the existing `npm run worker:price` package script
+  # (node src/workers/priceAnalyzer.js).
+  worker-price:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: resell-backend:latest
+    container_name: resell-worker-price
+    command: ["node", "src/workers/priceAnalyzer.js"]
+    environment:
+      - NODE_ENV=production
+      - MONGODB_URI=mongodb://mongodb:27017/resell
+      - REDIS_URL=redis://redis:6379
+      - ML_SERVICE_URL=http://ml-service:5000
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      disable: true
     networks:
       - resell-network
 

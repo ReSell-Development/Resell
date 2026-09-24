@@ -1,5 +1,5 @@
 const { Worker } = require('bullmq');
-const { connection, priceAnalysisQueue } = require('../queues');
+const queues = require('../queues');
 const Product = require('../models/Product');
 const Category = require('../models/Category');
 const { calculateRecommendedPrice } = require('../services/priceRecommendation');
@@ -47,49 +47,63 @@ async function refinePrice(productId) {
   });
 }
 
-const priceAnalysisWorker = new Worker(
-  'price-analysis',
-  async (job) => {
-    // Dispatch based on job name
-    if (job.name === SWEEP_NAME) {
-      console.log('[PriceWorker] Running price-refinement-sweep');
-      const result = await sweepStalePrices({
-        enqueue: async (productId) => {
-          await priceAnalysisQueue.add('refine-price', { productId }, { delay: 1000 });
-        },
-      });
-      console.log(`[PriceWorker] Sweep result: ${JSON.stringify(result)}`);
-      return result;
-    }
+(async () => {
+  // The queue module resolves its shared Redis connection asynchronously —
+  // wait for it before constructing the BullMQ Worker. Exit non-zero when
+  // Redis is unavailable so the container restart policy retries.
+  try {
+    await queues.whenConnected;
+  } catch (err) {
+    console.error('[PriceWorker] Redis unavailable, exiting:', err.message);
+    process.exit(1);
+  }
 
-    // Default: single-product price refinement
-    const { productId } = job.data;
-    console.log(`[PriceWorker] Re-analyzing price for product ${productId}`);
+  const { connection, priceAnalysisQueue } = queues;
 
-    await refinePrice(productId);
+  const priceAnalysisWorker = new Worker(
+    'price-analysis',
+    async (job) => {
+      // Dispatch based on job name
+      if (job.name === SWEEP_NAME) {
+        console.log('[PriceWorker] Running price-refinement-sweep');
+        const result = await sweepStalePrices({
+          enqueue: async (productId) => {
+            await priceAnalysisQueue.add('refine-price', { productId }, { delay: 1000 });
+          },
+        });
+        console.log(`[PriceWorker] Sweep result: ${JSON.stringify(result)}`);
+        return result;
+      }
 
-    console.log(`[PriceWorker] Completed price analysis for product ${productId}`);
-    return { success: true, productId };
-  },
-  { connection, concurrency: 2 }
-);
+      // Default: single-product price refinement
+      const { productId } = job.data;
+      console.log(`[PriceWorker] Re-analyzing price for product ${productId}`);
 
-priceAnalysisWorker.on('completed', (job) => {
-  console.log(`[PriceWorker] Job ${job.id} (${job.name || 'refine-price'}) completed`);
-});
+      await refinePrice(productId);
 
-priceAnalysisWorker.on('failed', (job, err) => {
-  console.error(`[PriceWorker] Job ${job?.id} (${job?.name || 'refine-price'}) failed:`, err.message);
-});
+      console.log(`[PriceWorker] Completed price analysis for product ${productId}`);
+      return { success: true, productId };
+    },
+    { connection, concurrency: 2 }
+  );
 
-console.log('[PriceWorker] Price analysis worker started');
+  priceAnalysisWorker.on('completed', (job) => {
+    console.log(`[PriceWorker] Job ${job.id} (${job.name || 'refine-price'}) completed`);
+  });
 
-process.on('SIGINT', async () => {
-  await priceAnalysisWorker.close();
-  process.exit(0);
-});
+  priceAnalysisWorker.on('failed', (job, err) => {
+    console.error(`[PriceWorker] Job ${job?.id} (${job?.name || 'refine-price'}) failed:`, err.message);
+  });
 
-process.on('SIGTERM', async () => {
-  await priceAnalysisWorker.close();
-  process.exit(0);
-});
+  console.log('[PriceWorker] Price analysis worker started');
+
+  process.on('SIGINT', async () => {
+    await priceAnalysisWorker.close();
+    process.exit(0);
+  });
+
+  process.on('SIGTERM', async () => {
+    await priceAnalysisWorker.close();
+    process.exit(0);
+  });
+})();
