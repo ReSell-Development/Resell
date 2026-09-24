@@ -109,8 +109,41 @@ const similarity = (hash1, hash2) => {
   return Math.max(0, 1 - distance / 64);
 };
 
+/**
+ * Perceptual hash of the horizontally flipped (mirrored) image.
+ *
+ * Fraudsters mirror a stolen image to evade pHash detection — the DCT
+ * hash of a flipped image differs by a large hamming distance (observed
+ * ~53 on real test images), so the plain hash never matches. Hashing the
+ * flopped variant as well lets duplicate checks catch mirrored copies:
+ * a mirrored upload's own hash matches the original's mirror hash.
+ *
+ * Falls back to the normal hash when sharp is unavailable (no extra
+ * false positives, just no mirror coverage).
+ */
+const mirrorPerceptualHashFromBuffer = async (imageBuffer) => {
+  try {
+    let sharp;
+    try {
+      sharp = require('sharp');
+    } catch {
+      sharp = null;
+    }
+
+    if (!sharp) {
+      return perceptualHashFromBuffer(imageBuffer);
+    }
+
+    const flopped = await sharp(imageBuffer).flop().png().toBuffer();
+    return perceptualHashFromBuffer(flopped);
+  } catch (err) {
+    return perceptualHashFromBuffer(imageBuffer);
+  }
+};
+
 module.exports = {
   perceptualHashFromBuffer,
+  mirrorPerceptualHashFromBuffer,
   hammingDistance,
   similarity,
 };

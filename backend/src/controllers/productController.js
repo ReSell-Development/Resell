@@ -3,7 +3,11 @@ const Category = require('../models/Category');
 const User = require('../models/User');
 const AppError = require('../utils/AppError');
 const { uploadToCloudinary, deleteFromCloudinary } = require('../config/cloudinary');
-const { perceptualHashFromBuffer, hammingDistance } = require('../services/imageHash');
+const {
+  perceptualHashFromBuffer,
+  mirrorPerceptualHashFromBuffer,
+  hammingDistance,
+} = require('../services/imageHash');
 const computerVision = require('../services/computerVision');
 const { calculateRecommendedPrice } = require('../services/priceRecommendation');
 const { detectRisk } = require('../services/fraudDetection');
@@ -412,6 +416,37 @@ const createProduct = async (req, res, next) => {
   }
 };
 
+/**
+ * Download an image buffer from a URL. Uses the same fetch pattern as
+ * reverifyImageAnalysis above.
+ */
+const fetchImageBuffer = async (url) => {
+  if (!url || typeof url !== 'string') throw new Error('Image URL missing');
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Image fetch failed with status ${res.status}`);
+  return Buffer.from(await res.arrayBuffer());
+};
+
+/**
+ * Clean up Cloudinary assets that were uploaded for a rejected update.
+ * Only deletes publicIds not referenced by any other listing so shared
+ * assets are never destroyed. Uses the existing deleteFromCloudinary
+ * mechanism (safe no-op when Cloudinary is not configured).
+ */
+const cleanupRejectedImages = async (publicIds, productId) => {
+  for (const publicId of publicIds) {
+    try {
+      const referenced = await Product.exists({
+        'images.publicId': publicId,
+        _id: { $ne: productId },
+      });
+      if (!referenced) await deleteFromCloudinary(publicId);
+    } catch (err) {
+      console.error('[UpdateProduct] Cloudinary cleanup failed:', err.message);
+    }
+  }
+};
+
 const updateProduct = async (req, res, next) => {
   try {
     const product = await Product.findById(req.params.id);
@@ -440,13 +475,179 @@ const updateProduct = async (req, res, next) => {
     for (const key of allowed) {
       if (req.body[key] !== undefined) product[key] = req.body[key];
     }
-    if (req.body.images && Array.isArray(req.body.images) && req.body.images.length > 0) {
-      product.images = req.body.images.map((img, idx) => ({
+
+    const incoming =
+      req.body.images && Array.isArray(req.body.images) && req.body.images.length > 0
+        ? req.body.images
+        : null;
+
+    if (!incoming) {
+      // No image change — existing behavior
+      await product.save();
+
+      const populated = await Product.findById(product._id)
+        .populate('category', 'name slug')
+        .populate('seller', 'name avatar');
+
+      return res.json({ success: true, product: populated });
+    }
+
+    const keyOf = (img) => img.publicId || img.url;
+    const currentKeys = new Set(product.images.map((i) => keyOf(i)).filter(Boolean));
+
+    // The image set is "unchanged" when every incoming image is already on
+    // the listing — edits that only touch other fields keep existing behavior.
+    const imagesChanged =
+      incoming.length !== product.images.length ||
+      incoming.some((img) => !currentKeys.has(keyOf(img)));
+
+    if (!imagesChanged) {
+      product.images = incoming.map((img, idx) => ({
         url: img.url,
         publicId: img.publicId,
         isPrimary: idx === 0,
       }));
+      await product.save();
+
+      const populated = await Product.findById(product._id)
+        .populate('category', 'name slug')
+        .populate('seller', 'name avatar');
+
+      return res.json({ success: true, product: populated });
     }
+
+    // ---- Edit-time image re-verification (same defenses as creation) ----
+    // The product is NOT saved until every new image passes verification,
+    // so a rejected edit can never leave a partially updated listing.
+    const category = req.body.category !== undefined ? req.body.category : product.category;
+    const newPublicIds = [];
+    const verified = [];
+
+    try {
+      for (const img of incoming) {
+        const key = keyOf(img);
+        const retained = currentKeys.has(key);
+        let hash = null;
+        let mirrorHash = null;
+
+        // Hashes are always computed server-side — client-submitted
+        // hashes are never trusted.
+        try {
+          const buffer = await fetchImageBuffer(img.url);
+          hash = await perceptualHashFromBuffer(buffer);
+          mirrorHash = await mirrorPerceptualHashFromBuffer(buffer);
+        } catch (err) {
+          // Retained images may fall back to their stored hash; brand-new
+          // images must be verifiable server-side or the edit is rejected.
+          const stored = product.images.find((i) => keyOf(i) === key);
+          if (retained && stored && stored.perceptualHash) {
+            hash = stored.perceptualHash;
+          } else {
+            throw new AppError(
+              'Could not verify one or more images. Images must be uploaded through ReSell.',
+              400,
+              'IMAGE_VERIFICATION_FAILED'
+            );
+          }
+        }
+
+        if (!retained && img.publicId) newPublicIds.push(img.publicId);
+        verified.push({ img, hash, mirrorHash, isNew: !retained });
+      }
+
+      // Duplicate detection for NEW images — identical rules to the
+      // upload-time check: active/sold listings, scoped to the listing's
+      // category, hamming distance <= DUPLICATE_HASH_THRESHOLD. Both the
+      // normal and the mirrored hash are probed so a flipped copy of an
+      // existing image cannot slip through.
+      const candidateFilter = {
+        _id: { $ne: product._id },
+        status: { $in: ['active', 'sold'] },
+        'aiAnalysis.imageHashes': { $exists: true, $ne: [] },
+      };
+      if (category) candidateFilter.category = category;
+
+      const candidates = await Product.find(candidateFilter)
+        .select('title aiAnalysis.imageHashes')
+        .limit(500);
+
+      for (const v of verified) {
+        if (!v.isNew) continue;
+        for (const probe of [v.hash, v.mirrorHash]) {
+          if (!probe) continue;
+          for (const candidate of candidates) {
+            for (const candidateHash of candidate.aiAnalysis?.imageHashes || []) {
+              const distance = hammingDistance(probe, candidateHash);
+              if (distance <= DUPLICATE_HASH_THRESHOLD) {
+                const similarityPct = Math.round((1 - distance / 64) * 100);
+                throw new AppError(
+                  `Duplicate image detected (~${similarityPct}% similar to existing listing "${candidate.title}"). This image is already used in another listing.`,
+                  409,
+                  'DUPLICATE_IMAGE'
+                );
+              }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      // Verification failed — nothing was persisted. Clean up the newly
+      // uploaded Cloudinary assets that belong to this rejected update.
+      await cleanupRejectedImages(newPublicIds, product._id);
+      throw err;
+    }
+
+    // Verification passed — apply the new image set with fresh hashes
+    product.images = verified.map((v, idx) => ({
+      url: v.img.url,
+      publicId: v.img.publicId,
+      isPrimary: idx === 0,
+      perceptualHash: v.hash,
+    }));
+    if (!product.aiAnalysis) product.aiAnalysis = {};
+    product.aiAnalysis.imageHashes = verified.flatMap((v) =>
+      [v.hash, v.mirrorHash].filter(Boolean)
+    );
+    product.aiAnalysis.lastAnalyzedAt = new Date();
+
+    await product.save();
+
+    // Queue the full AI analysis re-run through the existing worker pipeline
+    await imageProcessingQueue.add('analyze-product', {
+      productId: product._id.toString(),
+      images: verified.map((v) => ({
+        url: v.img.url,
+        publicId: v.img.publicId,
+        hash: v.hash,
+      })),
+      productData: {
+        title: product.title,
+        description: product.description,
+        price: product.price,
+        originalPrice: product.originalPrice,
+        category: product.category,
+        brand: product.brand,
+        model: product.model,
+        condition: product.condition,
+        yearsUsed: product.yearsUsed,
+        specifications: product.specifications || [],
+        location: product.location || {},
+      },
+    });
+
+    // Recalculate the fraud/risk score with the verified hashes
+    // (existing detectRisk service — same as listing creation)
+    const risk = await detectRisk({
+      product,
+      hashes: product.aiAnalysis.imageHashes,
+      aiAnalysis: product.aiAnalysis,
+    });
+    product.aiAnalysis.riskAssessment = {
+      riskScore: risk.riskScore,
+      riskLevel: risk.riskLevel,
+      factors: risk.factors,
+      assessedAt: new Date(),
+    };
     await product.save();
 
     const populated = await Product.findById(product._id)
