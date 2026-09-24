@@ -313,6 +313,7 @@ export default function SellProduct() {
           url: img.url,
           publicId: img.publicId,
           hash: img.hash,
+          ...(img.mirrorHash ? { mirrorHash: img.mirrorHash } : {}),
         })),
         specifications: form.specifications.filter((s) => s.key?.trim() && s.value?.trim()).map((s) => ({ key: s.key.trim(), value: s.value.trim() })),
       };

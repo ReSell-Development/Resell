@@ -237,12 +237,15 @@ describe('Service Unit Tests', () => {
   });
 
   describe('computerVision.classifyProduct', () => {
+    // The first classification lazily downloads/loads the MobileNet
+    // model, which can take well over the 30s default on slow networks —
+    // allow generous headroom for that one-time load.
     it('classifies electronics from title keywords', async () => {
       const buf = Buffer.alloc(100, 0x80);
       const result = await classifyProduct(buf, { title: 'iPhone 14 Pro' });
       expect(result.category).toBe('Electronics');
       expect(result.confidence).toBeGreaterThan(0);
-    });
+    }, 120000);
 
     it('classifies fashion from title keywords', async () => {
       const buf = Buffer.alloc(100, 0x80);

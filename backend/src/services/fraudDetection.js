@@ -27,7 +27,10 @@ const detectRisk = async ({ product, hashes = [], aiAnalysis = {} }) => {
   const factors = [];
   let riskScore = 0;
 
-  // 1. Duplicate image risk — similarity-based via perceptual hashing
+  // 1. Duplicate image risk — similarity-based via perceptual hashing.
+  //    Scans ALL product hashes against ALL candidate hashes and reports
+  //    the BEST (most similar) match, so factors reference the strongest
+  //    evidence rather than whichever listing happened to be scanned first.
   if (hashes && hashes.length > 0) {
     // Fetch candidate products in the same category (or all if no category)
     const candidateFilter = {
@@ -43,25 +46,27 @@ const detectRisk = async ({ product, hashes = [], aiAnalysis = {} }) => {
       .select('title aiAnalysis.imageHashes')
       .limit(500);
 
-    for (const hash of hashes) {
-      let duplicateFound = false;
-      for (const candidate of candidates) {
-        const candidateHashes = candidate.aiAnalysis?.imageHashes || [];
-        for (const candidateHash of candidateHashes) {
+    let bestMatch = null; // { distance, title }
+    for (const candidate of candidates) {
+      const candidateHashes = candidate.aiAnalysis?.imageHashes || [];
+      for (const candidateHash of candidateHashes) {
+        for (const hash of hashes) {
           const distance = hammingDistance(hash, candidateHash);
-          if (distance <= HASH_SIMILARITY_THRESHOLD) {
-            riskScore += 35;
-            const similarityPct = Math.round((1 - distance / 64) * 100);
-            factors.push(
-              `Duplicate image detected (~${similarityPct}% similar to listing "${candidate.title}", distance: ${distance})`
-            );
-            duplicateFound = true;
-            break;
+          if (distance <= HASH_SIMILARITY_THRESHOLD && (!bestMatch || distance < bestMatch.distance)) {
+            bestMatch = { distance, title: candidate.title };
           }
         }
-        if (duplicateFound) break;
       }
-      if (duplicateFound) break;
+      // Cannot do better than an exact match
+      if (bestMatch?.distance === 0) break;
+    }
+
+    if (bestMatch) {
+      riskScore += 35;
+      const similarityPct = Math.round((1 - bestMatch.distance / 64) * 100);
+      factors.push(
+        `Duplicate image detected (~${similarityPct}% similar to listing "${bestMatch.title}", distance: ${bestMatch.distance})`
+      );
     }
   }
 

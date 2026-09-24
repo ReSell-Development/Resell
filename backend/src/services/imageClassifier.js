@@ -183,6 +183,75 @@ const IMAGENET_TO_CATEGORY = {
   'tire': 'Automotive',
 };
 
+/**
+ * Word-boundary label matchers, precompiled once.
+ *
+ * Substring matching (label.includes(key)) mis-mapped labels: e.g. the
+ * MobileNet label "cardigan" contains "car" (→ Automotive) even though it
+ * is clothing, and "bookcase" contains "book" (→ Books & Media) even though
+ * it is furniture. Word boundaries make mapping precise while still
+ * matching multi-word labels ("running shoe") and hyphenated ones
+ * ("t-shirt").
+ */
+const LABEL_MATCHERS = Object.entries(IMAGENET_TO_CATEGORY).map(([key, category]) => ({
+  key,
+  category,
+  regex: new RegExp(`\\b${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i'),
+}));
+
+/**
+ * Map MobileNet predictions to ReSell categories (pure function).
+ *
+ * Sums probabilities per category across the top predictions using
+ * word-boundary label matching, returning the best-scoring category.
+ *
+ * @param {Array<{className: string, probability: number}>} predictions
+ * @returns {{category: string, confidence: number, topLabels: Array}}
+ */
+const mapPredictionsToCategory = (predictions = []) => {
+  const categoryScores = {};
+  const topLabels = [];
+
+  for (const pred of predictions) {
+    const label = String(pred.className || '').toLowerCase();
+    const prob = pred.probability || 0;
+
+    topLabels.push({ label: pred.className, probability: prob });
+
+    // Count each prediction at most once per category, using the longest
+    // (most specific) matching label. Otherwise a label like
+    // "running shoe" would double-count Fashion via both the
+    // "running shoe" and "shoe" keys.
+    const matchedByCategory = {};
+    for (const { key, category, regex } of LABEL_MATCHERS) {
+      if (regex.test(label)) {
+        const prev = matchedByCategory[category];
+        if (!prev || key.length > prev.length) {
+          matchedByCategory[category] = key;
+        }
+      }
+    }
+    for (const category of Object.keys(matchedByCategory)) {
+      categoryScores[category] = (categoryScores[category] || 0) + prob;
+    }
+  }
+
+  let bestCategory = 'Other';
+  let bestScore = 0;
+  for (const [category, score] of Object.entries(categoryScores)) {
+    if (score > bestScore) {
+      bestScore = score;
+      bestCategory = category;
+    }
+  }
+
+  return {
+    category: bestCategory,
+    confidence: bestScore > 0 ? Number(Math.min(0.95, bestScore).toFixed(2)) : 0,
+    topLabels,
+  };
+};
+
 /** Confidence threshold below which we don't auto-fill category. */
 const CONFIDENCE_THRESHOLD = 0.15;
 
@@ -257,38 +326,12 @@ const classifyImage = async (imageBuffer) => {
     // Classify
     const predictions = await m.classify(tensor, 10);
 
-    // Map ImageNet labels → ReSell categories
-    const categoryScores = {};
-    const topLabels = [];
-
-    for (const pred of predictions) {
-      const label = pred.className.toLowerCase();
-      const prob = pred.probability;
-
-      topLabels.push({ label: pred.className, probability: prob });
-
-      for (const [imagenetLabel, resellCategory] of Object.entries(IMAGENET_TO_CATEGORY)) {
-        if (label.includes(imagenetLabel)) {
-          if (!categoryScores[resellCategory]) categoryScores[resellCategory] = 0;
-          categoryScores[resellCategory] += prob;
-        }
-      }
-    }
-
-    let bestCategory = 'Other';
-    let bestScore = 0;
-    for (const [category, score] of Object.entries(categoryScores)) {
-      if (score > bestScore) {
-        bestScore = score;
-        bestCategory = category;
-      }
-    }
-
-    const confidence = bestScore > 0 ? Math.min(0.95, bestScore) : 0;
+    // Map ImageNet labels → ReSell categories (word-boundary matching)
+    const { category, confidence, topLabels } = mapPredictionsToCategory(predictions);
 
     return {
-      category: bestCategory,
-      confidence: Number(confidence.toFixed(2)),
+      category,
+      confidence,
       topLabels,
       source: 'mobilenet',
     };
@@ -303,6 +346,7 @@ const classifyImage = async (imageBuffer) => {
 module.exports = {
   classifyImage,
   loadModel,
+  mapPredictionsToCategory,
   IMAGENET_TO_CATEGORY,
   CONFIDENCE_THRESHOLD,
 };

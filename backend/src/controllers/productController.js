@@ -3,7 +3,7 @@ const Category = require('../models/Category');
 const User = require('../models/User');
 const AppError = require('../utils/AppError');
 const { uploadToCloudinary, deleteFromCloudinary } = require('../config/cloudinary');
-const { perceptualHashFromBuffer, hammingDistance } = require('../services/imageHash');
+const { perceptualHashVariantsFromBuffer, hammingDistance } = require('../services/imageHash');
 const computerVision = require('../services/computerVision');
 const { calculateRecommendedPrice } = require('../services/priceRecommendation');
 const { detectRisk } = require('../services/fraudDetection');
@@ -139,35 +139,39 @@ const uploadImages = async (req, res, next) => {
       throw new AppError('No images provided', 400, 'NO_FILES');
     }
 
-    // Phase 1: Compute perceptual hashes for ALL incoming images before any
-    // Cloudinary upload. This ensures we can reject duplicates without leaving
-    // orphaned files on Cloudinary.
+    // Phase 1: Compute perceptual hashes (normal + mirrored variant) for ALL
+    // incoming images before any Cloudinary upload. This ensures we can reject
+    // duplicates — including mirror-flipped copies — without leaving orphaned
+    // files on Cloudinary.
     const fileHashes = [];
     for (const file of req.files) {
-      const hash = await perceptualHashFromBuffer(file.buffer);
-      fileHashes.push({ file, hash });
+      const { hash, mirroredHash } = await perceptualHashVariantsFromBuffer(file.buffer);
+      fileHashes.push({ file, hash, mirroredHash });
     }
 
-    // Phase 2: Check each hash against existing active/sold products.
+    // Phase 2: Check each variant against existing active/sold products.
     // Scoped to same category when available, otherwise global.
-    // Limit to 500 candidates for performance.
-    for (const { hash } of fileHashes) {
-      const candidateFilter = {
-        status: { $in: ['active', 'sold'] },
-        'aiAnalysis.imageHashes': { $exists: true, $ne: [] },
-      };
-      if (req.body.category) {
-        candidateFilter.category = req.body.category;
-      }
+    // Limit to 500 candidates for performance. The query is hoisted so all
+    // uploaded files are checked against a single candidate snapshot.
+    const candidateFilter = {
+      status: { $in: ['active', 'sold'] },
+      'aiAnalysis.imageHashes': { $exists: true, $ne: [] },
+    };
+    if (req.body.category) {
+      candidateFilter.category = req.body.category;
+    }
+    const candidates = await Product.find(candidateFilter)
+      .select('title seller aiAnalysis.imageHashes')
+      .limit(500);
 
-      const candidates = await Product.find(candidateFilter)
-        .select('title seller aiAnalysis.imageHashes')
-        .limit(500);
-
+    for (const { hash, mirroredHash } of fileHashes) {
       for (const candidate of candidates) {
         const candidateHashes = candidate.aiAnalysis?.imageHashes || [];
         for (const candidateHash of candidateHashes) {
-          const distance = hammingDistance(hash, candidateHash);
+          const distance = Math.min(
+            hammingDistance(hash, candidateHash),
+            hammingDistance(mirroredHash, candidateHash)
+          );
           if (distance <= DUPLICATE_HASH_THRESHOLD) {
             const similarityPct = Math.round((1 - distance / 64) * 100);
             throw new AppError(
@@ -185,7 +189,9 @@ const uploadImages = async (req, res, next) => {
     for (const file of req.files) {
       try {
         const uploaded = await uploadToCloudinary(file.buffer, 'resell/products');
-        const hash = fileHashes.find((fh) => fh.file === file)?.hash;
+        const fh = fileHashes.find((x) => x.file === file);
+        const hash = fh?.hash;
+        const mirroredHash = fh?.mirroredHash;
 
         // CV analysis
         const [condition, damage, classification] = await Promise.all([
@@ -203,6 +209,7 @@ const uploadImages = async (req, res, next) => {
           width: uploaded.width,
           height: uploaded.height,
           hash,
+          mirroredHash,
           analysis: {
             conditionScore: condition.score,
             damageScore: damage.score,
@@ -234,6 +241,7 @@ const uploadImages = async (req, res, next) => {
         width: r.width,
         height: r.height,
         hash: r.hash,
+        mirrorHash: r.mirroredHash,
       })),
       analysis: {
         conditionScore: Math.round(avgCondition),
@@ -346,7 +354,9 @@ const createProduct = async (req, res, next) => {
         conditionScore: 0,
         damageScore: 0,
         damageDescription: '',
-        imageHashes: (images || []).map((i) => i.hash).filter(Boolean),
+        imageHashes: [
+          ...new Set((images || []).flatMap((i) => [i.hash, i.mirrorHash].filter(Boolean))),
+        ],
         priceRecommendation: {
           recommendedPrice: 0,
           minPrice: 0,
@@ -367,6 +377,7 @@ const createProduct = async (req, res, next) => {
         url: img.url,
         publicId: img.publicId,
         hash: img.hash,
+        mirrorHash: img.mirrorHash,
       })),
       productData: {
         title,
