@@ -18,6 +18,7 @@ import {
   Tag,
   Shield,
   ArrowLeftRight,
+  Package,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useSocket } from '../../contexts/SocketContext';
@@ -386,6 +387,10 @@ export default function Navbar() {
                   <ArrowLeftRight className="h-5 w-5 text-slate-600 transition-colors group-hover:text-brand-600" />
                 </IconLink>
 
+                <IconLink to="/orders" label="My Orders">
+                  <Package className="h-5 w-5 text-slate-600 transition-colors group-hover:text-brand-600" />
+                </IconLink>
+
                 <IconLink to="/chat" label="Messages" badge={totalUnread}>
                   <MessageCircle className="h-5 w-5 text-slate-600 transition-colors group-hover:text-brand-600" />
                 </IconLink>
@@ -519,6 +524,7 @@ export default function Navbar() {
                             { to: '/my-products', icon: ShoppingBag, label: 'My Listings' },
                             { to: '/favorites', icon: Heart, label: 'Favorites' },
                             { to: '/offers', icon: ArrowLeftRight, label: 'Offers' },
+                            { to: '/orders', icon: Package, label: 'My Orders' },
                             { to: '/chat', icon: MessageCircle, label: 'Messages' },
                           ].map((item) => (
                             <Link
@@ -619,6 +625,7 @@ export default function Navbar() {
                       { to: '/sell', icon: Plus, label: 'Sell Item' },
                       { to: '/favorites', icon: Heart, label: 'Favorites' },
                       { to: '/offers', icon: ArrowLeftRight, label: 'Offers' },
+                      { to: '/orders', icon: Package, label: 'My Orders' },
                       { to: '/chat', icon: MessageCircle, label: 'Messages', badge: totalUnread },
                     ].map((item) => (
                       <Link

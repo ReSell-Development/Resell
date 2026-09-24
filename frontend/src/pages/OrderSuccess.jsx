@@ -72,7 +72,7 @@ export default function OrderSuccess() {
           )}
 
           <div className="flex gap-3 justify-center">
-            <Link to="/my-products" className="btn-secondary">
+            <Link to="/orders" className="btn-secondary">
               My Orders
             </Link>
             <Link to="/marketplace" className="btn-primary flex items-center gap-2">
