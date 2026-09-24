@@ -6,6 +6,7 @@ const Review = require('../models/Review');
 const Category = require('../models/Category');
 const Conversation = require('../models/Conversation');
 const AppError = require('../utils/AppError');
+const { notify } = require('../services/notificationService');
 
 const getDashboardStats = async (req, res, next) => {
   try {
@@ -127,6 +128,14 @@ const updateUser = async (req, res, next) => {
 
     const user = await User.findByIdAndUpdate(req.params.id, updates, { new: true });
     if (!user) throw new AppError('User not found', 404, 'NOT_FOUND');
+
+    // Notify the affected user about the admin action
+    await notify({
+      recipient: user._id,
+      type: 'admin_action',
+      payload: { senderId: req.user._id },
+    });
+
     res.json({ success: true, user });
   } catch (err) {
     next(err);
@@ -194,6 +203,14 @@ const moderateProduct = async (req, res, next) => {
 
     const product = await Product.findByIdAndUpdate(req.params.id, updates, { new: true });
     if (!product) throw new AppError('Product not found', 404, 'NOT_FOUND');
+
+    // Notify the seller their listing was moderated
+    await notify({
+      recipient: product.seller,
+      type: 'admin_action',
+      payload: { productId: product._id, senderId: req.user._id },
+    });
+
     res.json({ success: true, product });
   } catch (err) {
     next(err);

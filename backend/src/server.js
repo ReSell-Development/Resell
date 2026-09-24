@@ -24,6 +24,7 @@ if (process.env.NODE_ENV !== 'test') {
 const connectDB = require('./config/db');
 const setupSocket = require('./sockets');
 const { errorHandler, notFound } = require('./utils/errorHandler');
+const { setIo } = require('./services/notificationService');
 
 const app = express();
 const server = http.createServer(app);
@@ -37,6 +38,8 @@ const io = new Server(server, {
 app.set('io', io);
 
 setupSocket(io);
+
+setIo(io);
 
 app.use(
   helmet({

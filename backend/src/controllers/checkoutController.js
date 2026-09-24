@@ -3,6 +3,7 @@ const Sale = require('../models/Sale');
 const Offer = require('../models/Offer');
 const AppError = require('../utils/AppError');
 const stripeService = require('../services/stripeService');
+const { notify } = require('../services/notificationService');
 
 // Statuses that mean money was captured for a Sale tied to an offer —
 // an offer in this state can no longer be used to start a new checkout.
@@ -71,6 +72,13 @@ const createCheckoutSession = async (req, res, next) => {
         buyer: req.user,
         shippingAddress,
         offer,
+      });
+
+      // Notify the seller a buyer started checkout on their listing
+      await notify({
+        recipient: locked.seller,
+        type: 'order',
+        payload: { saleId: sale._id, productId: locked._id, senderId: req.user._id },
       });
 
       res.status(201).json({

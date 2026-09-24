@@ -2,6 +2,7 @@ const Sale = require('../models/Sale');
 const Product = require('../models/Product');
 const AppError = require('../utils/AppError');
 const stripeService = require('../services/stripeService');
+const { notify } = require('../services/notificationService');
 
 const getMyOrders = async (req, res, next) => {
   try {
@@ -95,6 +96,13 @@ const shipOrder = async (req, res, next) => {
       .populate('buyer', 'name avatar')
       .populate('seller', 'name avatar');
 
+    // Notify the buyer that their order shipped (includes tracking)
+    await notify({
+      recipient: sale.buyer,
+      type: 'order',
+      payload: { saleId: sale._id, productId: sale.product, senderId: req.user._id },
+    });
+
     res.json({ success: true, order: populated });
   } catch (err) {
     next(err);
@@ -122,6 +130,13 @@ const deliverOrder = async (req, res, next) => {
       .populate('product', 'title images price')
       .populate('buyer', 'name avatar')
       .populate('seller', 'name avatar');
+
+    // Notify the seller that the buyer confirmed delivery
+    await notify({
+      recipient: sale.seller,
+      type: 'order',
+      payload: { saleId: sale._id, productId: sale.product, senderId: req.user._id },
+    });
 
     res.json({ success: true, order: populated });
   } catch (err) {
@@ -160,6 +175,15 @@ const cancelOrder = async (req, res, next) => {
       .populate('product', 'title images price')
       .populate('buyer', 'name avatar')
       .populate('seller', 'name avatar');
+
+    // Notify the other participant about the cancellation
+    // (paid cancellations go through a Stripe refund)
+    const recipient = isBuyer ? sale.seller : sale.buyer;
+    await notify({
+      recipient,
+      type: 'order',
+      payload: { saleId: sale._id, productId: sale.product, senderId: req.user._id },
+    });
 
     res.json({ success: true, order: populated });
   } catch (err) {

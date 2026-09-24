@@ -1,8 +1,22 @@
 const Notification = require('../models/Notification');
 
+// Socket.io instance used to push live notification events to
+// recipient rooms (user:<id>). Registered once from server.js.
+let ioInstance = null;
+
+const setIo = (io) => {
+  ioInstance = io;
+};
+
 const notify = async ({ recipient, type, payload = {} }) => {
   try {
-    return await Notification.create({ recipient, type, payload });
+    const notification = await Notification.create({ recipient, type, payload });
+    if (ioInstance) {
+      ioInstance
+        .to(`user:${recipient.toString()}`)
+        .emit('notification:new', { _id: notification._id, type });
+    }
+    return notification;
   } catch (err) {
     console.error(`[Notification] Failed to create: ${err.message}`);
     return null;
@@ -46,4 +60,4 @@ const markAllRead = async (recipientId) => {
   );
 };
 
-module.exports = { notify, getUnreadCount, getNotifications, markRead, markAllRead };
+module.exports = { notify, setIo, getUnreadCount, getNotifications, markRead, markAllRead };

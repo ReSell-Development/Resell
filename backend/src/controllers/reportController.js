@@ -3,6 +3,7 @@ const Product = require('../models/Product');
 const User = require('../models/User');
 const AppError = require('../utils/AppError');
 const audit = require('../middleware/audit');
+const { notify } = require('../services/notificationService');
 
 const populateTarget = async (report) => {
   if (report.targetType === 'product') {
@@ -111,6 +112,17 @@ const updateReport = async (req, res, next) => {
     report.reviewedBy = req.user._id;
     report.reviewedAt = new Date();
     await report.save();
+
+    // Notify the reporter their report was reviewed
+    await notify({
+      recipient: report.reporter,
+      type: 'report_update',
+      payload: {
+        reportId: report._id,
+        senderId: req.user._id,
+        ...(report.targetType === 'product' ? { productId: report.target } : {}),
+      },
+    });
 
     res.json({ success: true, report });
   } catch (err) {

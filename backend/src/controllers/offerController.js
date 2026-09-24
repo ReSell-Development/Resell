@@ -1,6 +1,7 @@
 const Offer = require('../models/Offer');
 const Product = require('../models/Product');
 const AppError = require('../utils/AppError');
+const { notify } = require('../services/notificationService');
 
 const createOffer = async (req, res, next) => {
   try {
@@ -27,6 +28,13 @@ const createOffer = async (req, res, next) => {
       .populate('product', 'title images price')
       .populate('buyer', 'name avatar')
       .populate('seller', 'name avatar');
+
+    // Notify the seller about the new incoming offer
+    await notify({
+      recipient: product.seller,
+      type: 'offer',
+      payload: { offerId: offer._id, productId, senderId: req.user._id },
+    });
 
     res.status(201).json({ success: true, offer: populated });
   } catch (err) {
@@ -176,6 +184,23 @@ const updateOffer = async (req, res, next) => {
       .populate('buyer', 'name avatar')
       .populate('seller', 'name avatar');
 
+    // Notify the other party about the outcome:
+    //   buyer withdrew  -> notify seller
+    //   seller accepted/rejected -> notify buyer
+    if (status === 'withdrawn') {
+      await notify({
+        recipient: offer.seller,
+        type: 'offer',
+        payload: { offerId: offer._id, productId: offer.product, senderId: req.user._id },
+      });
+    } else if (status === 'accepted' || status === 'rejected') {
+      await notify({
+        recipient: offer.buyer,
+        type: 'offer',
+        payload: { offerId: offer._id, productId: offer.product, senderId: req.user._id },
+      });
+    }
+
     res.json({ success: true, offer: populated });
   } catch (err) {
     next(err);
@@ -202,6 +227,13 @@ const acceptOffer = async (req, res, next) => {
       .populate('buyer', 'name avatar')
       .populate('seller', 'name avatar');
 
+    // Notify the buyer their offer was accepted
+    await notify({
+      recipient: offer.buyer,
+      type: 'offer',
+      payload: { offerId: offer._id, productId: offer.product, senderId: req.user._id },
+    });
+
     res.json({ success: true, offer: populated });
   } catch (err) {
     next(err);
@@ -227,6 +259,13 @@ const rejectOffer = async (req, res, next) => {
       .populate('product', 'title images price')
       .populate('buyer', 'name avatar')
       .populate('seller', 'name avatar');
+
+    // Notify the buyer their offer was rejected
+    await notify({
+      recipient: offer.buyer,
+      type: 'offer',
+      payload: { offerId: offer._id, productId: offer.product, senderId: req.user._id },
+    });
 
     res.json({ success: true, offer: populated });
   } catch (err) {
@@ -271,6 +310,13 @@ const counterOffer = async (req, res, next) => {
       .populate('product', 'title images price')
       .populate('buyer', 'name avatar')
       .populate('seller', 'name avatar');
+
+    // Notify the buyer about the seller's counter offer
+    await notify({
+      recipient: original.buyer,
+      type: 'offer',
+      payload: { offerId: newOffer._id, productId: original.product, senderId: req.user._id },
+    });
 
     res.status(201).json({ success: true, offer: populated });
   } catch (err) {

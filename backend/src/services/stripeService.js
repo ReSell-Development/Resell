@@ -1,6 +1,7 @@
 const Stripe = require('stripe');
 const Sale = require('../models/Sale');
 const Product = require('../models/Product');
+const { notify } = require('../services/notificationService');
 
 const PLATFORM_FEE_PERCENT = 5;
 
@@ -108,6 +109,14 @@ async function handleCheckoutCompleted(event) {
     sale.transition('payment_failed', null, 'Product no longer available');
     sale.paymentStatus = 'failed';
     await sale.save();
+
+    // Notify the buyer their payment was refunded (listing no longer available)
+    await notify({
+      recipient: sale.buyer,
+      type: 'order',
+      payload: { saleId: sale._id, productId: sale.product },
+    });
+
     return { processed: false, reason: 'product_unavailable' };
   }
 
@@ -135,6 +144,14 @@ async function handleCheckoutCompleted(event) {
     );
     sale.paymentStatus = 'failed';
     await sale.save();
+
+    // Notify the buyer the payment did not match and was refunded
+    await notify({
+      recipient: sale.buyer,
+      type: 'order',
+      payload: { saleId: sale._id, productId: sale.product },
+    });
+
     return { processed: false, reason: 'amount_mismatch' };
   }
 
@@ -142,6 +159,13 @@ async function handleCheckoutCompleted(event) {
   sale.paymentStatus = 'paid';
   sale.stripePaymentIntentId = session.payment_intent;
   await sale.save();
+
+  // Notify the seller the order is paid and ready to ship
+  await notify({
+    recipient: sale.seller,
+    type: 'order',
+    payload: { saleId: sale._id, productId: sale.product },
+  });
 
   return { processed: true, saleId: sale._id };
 }
@@ -160,6 +184,13 @@ async function handleSessionExpired(event) {
   sale.paymentStatus = 'failed';
   await sale.save();
 
+  // Notify the buyer their checkout session expired
+  await notify({
+    recipient: sale.buyer,
+    type: 'order',
+    payload: { saleId: sale._id, productId: sale.product },
+  });
+
   return { processed: true, saleId: sale._id };
 }
 
@@ -175,6 +206,13 @@ async function handlePaymentFailed(event) {
   sale.transition('payment_failed', null, 'Payment failed');
   sale.paymentStatus = 'failed';
   await sale.save();
+
+  // Notify the buyer their payment failed
+  await notify({
+    recipient: sale.buyer,
+    type: 'order',
+    payload: { saleId: sale._id, productId: sale.product },
+  });
 
   return { processed: true, saleId: sale._id };
 }
