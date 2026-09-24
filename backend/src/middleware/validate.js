@@ -62,6 +62,7 @@ const createProductValidation = [
   body('images.*.url').notEmpty().withMessage('Image URL is required').isURL().withMessage('Invalid image URL'),
   body('images.*.publicId').notEmpty().withMessage('Image publicId is required'),
   body('images.*.hash').optional().isString(),
+  body('images.*.mirrorHash').optional().isString(),
   handleValidation,
 ];
 
