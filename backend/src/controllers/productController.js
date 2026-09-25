@@ -431,12 +431,13 @@ const fetchImageBuffer = async (url) => {
 };
 
 /**
- * Clean up Cloudinary assets that were uploaded for a rejected update.
- * Only deletes publicIds not referenced by any other listing so shared
- * assets are never destroyed. Uses the existing deleteFromCloudinary
- * mechanism (safe no-op when Cloudinary is not configured).
+ * Clean up Cloudinary assets that are no longer needed (a rejected update
+ * or a deleted listing). Only deletes publicIds not referenced by any
+ * other listing so shared assets are never destroyed. Uses the existing
+ * deleteFromCloudinary mechanism (safe no-op when Cloudinary is not
+ * configured) and logs — never silently swallows — cleanup failures.
  */
-const cleanupRejectedImages = async (publicIds, productId) => {
+const cleanupUnreferencedImages = async (publicIds, productId) => {
   for (const publicId of publicIds) {
     try {
       const referenced = await Product.exists({
@@ -445,7 +446,7 @@ const cleanupRejectedImages = async (publicIds, productId) => {
       });
       if (!referenced) await deleteFromCloudinary(publicId);
     } catch (err) {
-      console.error('[UpdateProduct] Cloudinary cleanup failed:', err.message);
+      console.error('[Cloudinary] Cleanup failed for', publicId, '-', err.message);
     }
   }
 };
@@ -596,7 +597,7 @@ const updateProduct = async (req, res, next) => {
     } catch (err) {
       // Verification failed — nothing was persisted. Clean up the newly
       // uploaded Cloudinary assets that belong to this rejected update.
-      await cleanupRejectedImages(newPublicIds, product._id);
+      await cleanupUnreferencedImages(newPublicIds, product._id);
       throw err;
     }
 
@@ -675,10 +676,12 @@ const deleteProduct = async (req, res, next) => {
       throw new AppError('Not authorized to delete this listing', 403, 'FORBIDDEN');
     }
 
-    // Delete images from Cloudinary
-    for (const img of product.images) {
-      if (img.publicId) await deleteFromCloudinary(img.publicId);
-    }
+    // Delete images from Cloudinary — only assets not still referenced
+    // by another listing; shared assets are never destroyed.
+    await cleanupUnreferencedImages(
+      product.images.map((img) => img.publicId).filter(Boolean),
+      product._id
+    );
 
     product.status = 'removed';
     await product.save();

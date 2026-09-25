@@ -137,13 +137,11 @@ const exchangeRoutes = require('./routes/exchangeRoutes');
 const offerRoutes = require('./routes/offerRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
 const orderRoutes = require('./routes/orderRoutes');
-const listingRoutes = require('./routes/listings');
 const { startScheduler: startExchangeScheduler } = require('./services/exchangeRates');
 const { registerSweepJob } = require('./queues');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/products', productRoutes);
-app.use('/api/listings', listingRoutes);
 app.use('/api/categories', categoryRoutes);
 app.use('/api/favorites', favoriteRoutes);
 app.use('/api/chat', chatRoutes);
