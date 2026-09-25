@@ -78,6 +78,14 @@ const productSchema = new mongoose.Schema(
     isFlagged: { type: Boolean, default: false },
     flagReason: { type: String, default: '' },
 
+    // Physical-product identity (serial/IMEI/VIN registry entry)
+    productIdentity: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'ProductIdentity',
+      default: null,
+      index: true,
+    },
+
     // Duplicate detection fields
     duplicateInfo: {
       isDuplicate: { type: Boolean, default: false, index: true },

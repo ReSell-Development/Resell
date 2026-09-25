@@ -62,6 +62,7 @@ const createProductValidation = [
   body('images.*.url').notEmpty().withMessage('Image URL is required').isURL().withMessage('Invalid image URL'),
   body('images.*.publicId').notEmpty().withMessage('Image publicId is required'),
   body('images.*.hash').optional().isString(),
+  body('images.*.mirrorHash').optional().isString(),
   handleValidation,
 ];
 
@@ -211,6 +212,21 @@ const createCheckoutSessionValidation = [
   handleValidation,
 ];
 
+const verifyPossessionValidation = [
+  param('id').isMongoId().withMessage('Invalid product ID'),
+  body('proofImageUrl').isURL().withMessage('A valid proof photo URL is required'),
+  body('code').notEmpty().withMessage('Verification code is required').isString().trim(),
+  handleValidation,
+];
+
+const markIdentityStatusValidation = [
+  param('id').isMongoId().withMessage('Invalid identity ID'),
+  body('status').isIn(['active', 'flagged', 'reported_stolen']).withMessage('Invalid identity status'),
+  body('reportId').optional().isMongoId().withMessage('Invalid report ID'),
+  body('note').optional().isString().trim().isLength({ max: 500 }).withMessage('Note too long'),
+  handleValidation,
+];
+
 module.exports = {
   handleValidation,
   registerValidation,
@@ -234,4 +250,6 @@ module.exports = {
   createOfferValidation,
   counterOfferValidation,
   createCheckoutSessionValidation,
+  verifyPossessionValidation,
+  markIdentityStatusValidation,
 };

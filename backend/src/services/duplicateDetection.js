@@ -175,9 +175,12 @@ class DuplicateDetector {
         candidateFilter.category = category;
       }
 
-      // Query for candidates with hashes
+      // Query for candidates with hashes.
+      // `images` is selected so Stage 2 (CNN features) can fetch each
+      // candidate's primary image URL — without it the CNN layer can
+      // never run.
       const candidates = await Product.find(candidateFilter)
-        .select('_id seller aiAnalysis.imageHashes title')
+        .select('_id seller aiAnalysis.imageHashes images title')
         .limit(500)
         .lean();
 
@@ -186,11 +189,13 @@ class DuplicateDetector {
       for (const candidate of candidates) {
         const candidateHashes = candidate.aiAnalysis?.imageHashes || [];
         let minDistance = 64;
-        
+        let minHash = null;
+
         for (const candidateHash of candidateHashes) {
           const distance = hammingDistance(newHash, candidateHash);
           if (distance < minDistance) {
             minDistance = distance;
+            minHash = candidateHash;
           }
         }
 
@@ -200,7 +205,8 @@ class DuplicateDetector {
             sellerId: candidate.seller,
             title: candidate.title,
             hammingDistance: minDistance,
-            hashSimilarity: similarity(newHash, candidateHashes[0]),
+            // Similarity of the CLOSEST matching hash, not the first stored one
+            hashSimilarity: minHash ? similarity(newHash, minHash) : 0,
           });
         }
       }

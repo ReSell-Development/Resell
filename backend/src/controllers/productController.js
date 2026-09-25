@@ -1,12 +1,20 @@
 const Product = require('../models/Product');
 const Category = require('../models/Category');
 const User = require('../models/User');
+const ProductIdentity = require('../models/ProductIdentity');
 const AppError = require('../utils/AppError');
 const { uploadToCloudinary, deleteFromCloudinary } = require('../config/cloudinary');
-const { perceptualHashFromBuffer, hammingDistance } = require('../services/imageHash');
+const { perceptualHashVariantsFromBuffer, hammingDistance } = require('../services/imageHash');
 const computerVision = require('../services/computerVision');
 const { calculateRecommendedPrice } = require('../services/priceRecommendation');
 const { detectRisk } = require('../services/fraudDetection');
+const {
+  verifyOwnershipForListing,
+  verifyPossession,
+  recordSaleProvenance,
+  SIGNALS,
+} = require('../services/identityVerification');
+const { isIdentifierEligible, createProvenanceEvent, verifyProvenanceChain } = require('../services/provenance');
 const { findSimilar } = require('../services/similarProducts');
 const { imageProcessingQueue } = require('../queues');
 
@@ -139,35 +147,39 @@ const uploadImages = async (req, res, next) => {
       throw new AppError('No images provided', 400, 'NO_FILES');
     }
 
-    // Phase 1: Compute perceptual hashes for ALL incoming images before any
-    // Cloudinary upload. This ensures we can reject duplicates without leaving
-    // orphaned files on Cloudinary.
+    // Phase 1: Compute perceptual hashes (normal + mirrored variant) for ALL
+    // incoming images before any Cloudinary upload. This ensures we can reject
+    // duplicates — including mirror-flipped copies — without leaving orphaned
+    // files on Cloudinary.
     const fileHashes = [];
     for (const file of req.files) {
-      const hash = await perceptualHashFromBuffer(file.buffer);
-      fileHashes.push({ file, hash });
+      const { hash, mirroredHash } = await perceptualHashVariantsFromBuffer(file.buffer);
+      fileHashes.push({ file, hash, mirroredHash });
     }
 
-    // Phase 2: Check each hash against existing active/sold products.
+    // Phase 2: Check each variant against existing active/sold products.
     // Scoped to same category when available, otherwise global.
-    // Limit to 500 candidates for performance.
-    for (const { hash } of fileHashes) {
-      const candidateFilter = {
-        status: { $in: ['active', 'sold'] },
-        'aiAnalysis.imageHashes': { $exists: true, $ne: [] },
-      };
-      if (req.body.category) {
-        candidateFilter.category = req.body.category;
-      }
+    // Limit to 500 candidates for performance. The query is hoisted so all
+    // uploaded files are checked against a single candidate snapshot.
+    const candidateFilter = {
+      status: { $in: ['active', 'sold'] },
+      'aiAnalysis.imageHashes': { $exists: true, $ne: [] },
+    };
+    if (req.body.category) {
+      candidateFilter.category = req.body.category;
+    }
+    const candidates = await Product.find(candidateFilter)
+      .select('title seller aiAnalysis.imageHashes')
+      .limit(500);
 
-      const candidates = await Product.find(candidateFilter)
-        .select('title seller aiAnalysis.imageHashes')
-        .limit(500);
-
+    for (const { hash, mirroredHash } of fileHashes) {
       for (const candidate of candidates) {
         const candidateHashes = candidate.aiAnalysis?.imageHashes || [];
         for (const candidateHash of candidateHashes) {
-          const distance = hammingDistance(hash, candidateHash);
+          const distance = Math.min(
+            hammingDistance(hash, candidateHash),
+            hammingDistance(mirroredHash, candidateHash)
+          );
           if (distance <= DUPLICATE_HASH_THRESHOLD) {
             const similarityPct = Math.round((1 - distance / 64) * 100);
             throw new AppError(
@@ -185,7 +197,9 @@ const uploadImages = async (req, res, next) => {
     for (const file of req.files) {
       try {
         const uploaded = await uploadToCloudinary(file.buffer, 'resell/products');
-        const hash = fileHashes.find((fh) => fh.file === file)?.hash;
+        const fh = fileHashes.find((x) => x.file === file);
+        const hash = fh?.hash;
+        const mirroredHash = fh?.mirroredHash;
 
         // CV analysis
         const [condition, damage, classification] = await Promise.all([
@@ -203,6 +217,7 @@ const uploadImages = async (req, res, next) => {
           width: uploaded.width,
           height: uploaded.height,
           hash,
+          mirroredHash,
           analysis: {
             conditionScore: condition.score,
             damageScore: damage.score,
@@ -234,6 +249,7 @@ const uploadImages = async (req, res, next) => {
         width: r.width,
         height: r.height,
         hash: r.hash,
+        mirrorHash: r.mirroredHash,
       })),
       analysis: {
         conditionScore: Math.round(avgCondition),
@@ -307,6 +323,9 @@ const createProduct = async (req, res, next) => {
       location,
       images,
       currencyCode,
+      identifier,
+      identifierType,
+      proofImageUrl,
     } = req.body;
 
     if (!title || !description || !price || !category) {
@@ -315,6 +334,52 @@ const createProduct = async (req, res, next) => {
 
     if (!images || !Array.isArray(images) || images.length === 0) {
       throw new AppError('At least one image is required', 400);
+    }
+
+    // ── Product identity verification (extension) ──────────────────────
+    // For eligible categories with a serial/IMEI/VIN, verify physical
+    // ownership. Existing fraud checks (pHash, MobileNet, trust) still run.
+    let identityResult = null;
+    let identityStatus = null;
+    const identifierProvided = !!(identifier && identifierType);
+
+    if (identifierProvided) {
+      const eligible = await isIdentifierEligible(category);
+      if (eligible) {
+        identityResult = await verifyOwnershipForListing({
+          rawIdentifier: identifier,
+          identifierType,
+          sellerId: req.user._id,
+          proofImageUrl: proofImageUrl || undefined,
+        });
+
+        if (identityResult.outcome === 'reported_stolen') {
+          throw new AppError(
+            'This product identifier has been reported as stolen. Listing blocked.',
+            403,
+            'IDENTITY_BLOCKED'
+          );
+        }
+        if (identityResult.outcome === 'mismatch') {
+          throw new AppError(
+            'Ownership verification failed: this serial/IMEI is registered to a different seller with no verified transfer.',
+            403,
+            'OWNERSHIP_MISMATCH'
+          );
+        }
+        identityStatus = {
+          status: identityResult.identity.status,
+          verification: {
+            verified: !!(identityResult.identity.verification?.verifiedAt),
+            method: identityResult.identity.verification?.method || 'none',
+            possessionStatus: identityResult.identity.verification?.possessionStatus || 'unverified',
+            verificationCode: identityResult.identity.verification?.verificationCode || '',
+            codeExpiresAt: identityResult.identity.verification?.codeExpiresAt || null,
+          },
+          signals: identityResult.signals,
+          warnings: identityResult.warnings,
+        };
+      }
     }
 
     // Create product with minimal AI analysis (hashes from upload)
@@ -338,6 +403,10 @@ const createProduct = async (req, res, next) => {
         isPrimary: idx === 0,
       })),
       seller: req.user._id,
+      ...(identityResult?.identity ? { productIdentity: identityResult.identity._id } : {}),
+      ...(identityResult?.outcome === 'flagged'
+        ? { status: 'flagged', isFlagged: true, flagReason: 'Identity flagged — held for moderation' }
+        : {}),
       aiAnalysis: {
         classification: {
           predictedCategory: '',
@@ -346,7 +415,9 @@ const createProduct = async (req, res, next) => {
         conditionScore: 0,
         damageScore: 0,
         damageDescription: '',
-        imageHashes: (images || []).map((i) => i.hash).filter(Boolean),
+        imageHashes: [
+          ...new Set((images || []).flatMap((i) => [i.hash, i.mirrorHash].filter(Boolean))),
+        ],
         priceRecommendation: {
           recommendedPrice: 0,
           minPrice: 0,
@@ -367,6 +438,7 @@ const createProduct = async (req, res, next) => {
         url: img.url,
         publicId: img.publicId,
         hash: img.hash,
+        mirrorHash: img.mirrorHash,
       })),
       productData: {
         title,
@@ -383,15 +455,36 @@ const createProduct = async (req, res, next) => {
       },
     });
 
-    // Risk assessment (basic - based on hashes only)
+    // LISTED provenance event for tracked identities (server-side only)
+    if (identityResult?.identity) {
+      const identityDoc = identityResult.identity;
+      if (identityResult.outcome === 'registered') {
+        // First registration: link identity to the newly created listing
+        await ProductIdentity.updateOne(
+          { _id: identityDoc._id },
+          { $set: { productId: product._id } }
+        ).catch(() => {});
+        identityDoc.productId = product._id;
+      }
+      await createProvenanceEvent({
+        productIdentityId: identityResult.identity._id,
+        eventType: 'listed',
+        ownerId: req.user._id,
+        listingId: product._id,
+      }).catch(() => {});
+    }
+
+    // Risk assessment (basic - based on hashes only) — extended with
+    // product-identity signals; existing pHash/pricing/trust checks unchanged
     const risk = await detectRisk({
       product,
       hashes: product.aiAnalysis.imageHashes,
       aiAnalysis: product.aiAnalysis,
+      identitySignals: identityResult?.signals || [],
     });
     product.aiAnalysis.riskAssessment = {
       riskScore: risk.riskScore,
-      riskLevel: risk.riskLevel,
+      riskLevel: identityResult?.outcome === 'flagged' ? 'high' : risk.riskLevel,
       factors: risk.factors,
       assessedAt: new Date(),
     };
@@ -406,7 +499,103 @@ const createProduct = async (req, res, next) => {
       .populate('category', 'name slug')
       .populate('seller', 'name avatar');
 
-    res.status(201).json({ success: true, product: populated });
+    res.status(201).json({
+      success: true,
+      product: populated,
+      ...(identityStatus ? { identityStatus } : {}),
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * Identity verification status for a product.
+ *
+ * Exposes only safe fields: identity status, verification info,
+ * and provenance chain validity. Never exposes the raw identifier
+ * or previous owners' private information.
+ */
+const getProductIdentityStatus = async (req, res, next) => {
+  try {
+    const identity = await ProductIdentity.findOne({ productId: req.params.id });
+    if (!identity) {
+      return res.json({ success: true, tracked: false });
+    }
+
+    const chain = await verifyProvenanceChain(identity._id);
+
+    // Only the current owner may see the live verification code
+    const isOwner =
+      req.user && identity.currentOwnerId.toString() === req.user._id.toString();
+
+    const possessionStatus = identity.verification?.possessionStatus || 'unverified';
+    const signals =
+      identity.status === 'reported_stolen'
+        ? [SIGNALS.REPORTED_STOLEN_PRODUCT]
+        : identity.status === 'flagged'
+        ? [SIGNALS.PROVENANCE_INTEGRITY_FAILURE]
+        : possessionStatus === 'failed'
+        ? [SIGNALS.POSSESSION_VERIFICATION_FAILED]
+        : [];
+    const warnings =
+      identity.status === 'reported_stolen'
+        ? ['This product identifier has been reported as stolen.']
+        : identity.status === 'flagged'
+        ? ['This product identity is flagged and held for moderation.']
+        : !chain.valid
+        ? ['Provenance history for this product failed integrity verification.']
+        : possessionStatus === 'failed'
+        ? ['Proof-of-possession verification failed. Submit the correct code shown in your proof photo.']
+        : [];
+
+    res.json({
+      success: true,
+      tracked: true,
+      identifierType: identity.identifierType,
+      status: identity.status,
+      verification: {
+        verified: !!(identity.verification?.verifiedAt),
+        method: identity.verification?.method || 'none',
+        possessionStatus,
+      },
+      ...(isOwner
+        ? {
+            possession: {
+              verificationCode: identity.verification?.verificationCode || '',
+              codeExpiresAt: identity.verification?.codeExpiresAt || null,
+              attempts: identity.verification?.attempts || 0,
+            },
+          }
+        : {}),
+      provenance: {
+        valid: chain.valid,
+        eventCount: chain.eventCount,
+      },
+      signals,
+      warnings,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * Proof-of-possession submission (seller only). The seller uploads a photo
+ * of the physical product beside the short-lived verification code and
+ * enters the code. Supporting fraud signal only — never proof of ownership,
+ * and missing verification is never treated as fraud.
+ */
+const submitPossessionVerification = async (req, res, next) => {
+  try {
+    const { code, proofImageUrl } = req.body;
+    const result = await verifyPossession({
+      productId: req.params.id,
+      sellerId: req.user._id,
+      code,
+      proofImageUrl,
+    });
+    res.json({ success: true, possessionStatus: result.possessionStatus, ...result });
   } catch (err) {
     next(err);
   }
@@ -494,6 +683,16 @@ const markAsSold = async (req, res, next) => {
     }
     product.status = product.status === 'sold' ? 'active' : 'sold';
     await product.save();
+
+    // Provenance event for tracked identities (server-side, best-effort)
+    if (product.status === 'sold') {
+      await recordSaleProvenance({
+        productId: product._id.toString(),
+        sellerId: req.user._id.toString(),
+        eventType: 'sold',
+      });
+    }
+
     res.json({ success: true, product });
   } catch (err) {
     next(err);
@@ -584,4 +783,6 @@ module.exports = {
   getBrands,
   getSimilarProducts,
   suggestPrice,
+  getProductIdentityStatus,
+  submitPossessionVerification,
 };

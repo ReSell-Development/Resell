@@ -5,7 +5,7 @@
 const Product = require('../models/Product');
 const { duplicateDetector } = require('../services/duplicateDetection');
 const { uploadToCloudinary } = require('../config/cloudinary');
-const { perceptualHashFromBuffer } = require('../services/imageHash');
+const { perceptualHashVariantsFromBuffer } = require('../services/imageHash');
 const { extractColorHistogram, compressImage } = require('../services/imageUtils');
 const AppError = require('../utils/AppError');
 const { imageProcessingQueue } = require('../queues');
@@ -65,8 +65,8 @@ const uploadImages = async (req, res, next) => {
     const results = [];
     
     for (const file of req.files) {
-      // Phase 1: Compute perceptual hash
-      const hash = await perceptualHashFromBuffer(file.buffer);
+      // Phase 1: Compute perceptual hashes (normal + mirrored variant)
+      const { hash, mirroredHash } = await perceptualHashVariantsFromBuffer(file.buffer);
 
       // Phase 2: Upload to Cloudinary
       const uploaded = await uploadToCloudinary(file.buffer, 'resell/products');
@@ -80,6 +80,7 @@ const uploadImages = async (req, res, next) => {
       results.push({
         file,
         hash,
+        mirroredHash,
         uploaded,
         colorHistogram,
         compressedBuffer: compressed,
@@ -99,6 +100,7 @@ const uploadImages = async (req, res, next) => {
         imageUrl: result.uploaded.url,
         publicId: result.uploaded.publicId,
         hash: result.hash,
+        mirroredHash: result.mirroredHash,
         colorHistogram: result.colorHistogram,
         width: result.uploaded.width,
         height: result.uploaded.height,
@@ -136,6 +138,7 @@ const uploadImages = async (req, res, next) => {
         width: r.width,
         height: r.height,
         hash: r.hash,
+        mirrorHash: r.mirroredHash,
         colorHistogram: r.colorHistogram,
       })),
     });
@@ -231,7 +234,7 @@ const createListing = async (req, res, next) => {
         conditionScore: 0,
         damageScore: 0,
         damageDescription: '',
-        imageHashes: validImages.map(i => i.hash).filter(Boolean),
+        imageHashes: [...new Set(validImages.flatMap(i => [i.hash, i.mirrorHash]).filter(Boolean))],
         duplicateMatch: { productId: null, similarity: 0 },
         priceRecommendation: {
           recommendedPrice: 0,

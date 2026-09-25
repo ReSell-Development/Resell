@@ -12,6 +12,8 @@ const {
   getBrands,
   getSimilarProducts,
   suggestPrice,
+  getProductIdentityStatus,
+  submitPossessionVerification,
 } = require('../controllers/productController');
 const { protect, optionalAuth } = require('../middleware/auth');
 const upload = require('../middleware/upload');
@@ -20,6 +22,7 @@ const {
   createProductValidation,
   updateProductValidation,
   productQueryValidation,
+  verifyPossessionValidation,
 } = require('../middleware/validate');
 
 router.get('/', optionalAuth, productQueryValidation, getProducts);
@@ -28,6 +31,13 @@ router.get('/brands', getBrands);
 router.get('/mine', protect, getMyProducts);
 router.get('/:id', optionalAuth, getProduct);
 router.get('/:id/similar', optionalAuth, getSimilarProducts);
+router.get('/:id/identity', optionalAuth, getProductIdentityStatus);
+router.post(
+  '/:id/identity/verify-possession',
+  protect,
+  verifyPossessionValidation,
+  submitPossessionVerification
+);
 
 router.post(
   '/upload-images',

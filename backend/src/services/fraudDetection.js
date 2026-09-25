@@ -8,6 +8,8 @@
  *  - Complaint history
  *  - New accounts with high value listings
  *  - Seller trust signals
+ *  - Product identity / provenance (serial/IMEI/VIN ownership mismatch,
+ *    reused identifiers, multiple active listings, stolen products)
  */
 
 const Product = require('../models/Product');
@@ -23,11 +25,32 @@ const clamp = (val, min, max) => Math.max(min, Math.min(max, val));
 // same-category different products (min observed distance = 30, margin = 18 points).
 const HASH_SIMILARITY_THRESHOLD = 12;
 
-const detectRisk = async ({ product, hashes = [], aiAnalysis = {} }) => {
+// Product-identity fraud signals (from identityVerification.js), combined
+// with the existing risk score below.
+// Note: same identifier ≠ fraud. Same identifier + legitimate ownership
+// transfer = normal resale (no mismatch signals emitted). Same identifier +
+// conflicting ownership / no transfer = suspicious.
+const IDENTITY_SIGNAL_WEIGHTS = {
+  PRODUCT_IDENTIFIER_REUSED: { weight: 10, factor: 'Product identifier (serial/IMEI) reused from another listing' },
+  MULTIPLE_ACTIVE_LISTINGS: { weight: 30, factor: 'Same physical product identifier on multiple active listings' },
+  OWNERSHIP_MISMATCH: { weight: 35, factor: 'Identifier registered to a different owner with no verified ownership transfer' },
+  NO_VERIFIED_TRANSFER: { weight: 15, factor: 'No verified ownership transfer found for this identifier' },
+  PROVENANCE_INTEGRITY_FAILURE: { weight: 45, factor: 'Provenance chain integrity failure or flagged identity' },
+  REPORTED_STOLEN_PRODUCT: { weight: 100, factor: 'Product identifier reported as stolen' },
+  // Supporting signal only — a FAILED attempt is suspicious; UNVERIFIED
+  // (never submitted) is deliberately absent: missing verification is
+  // never treated as fraud on its own.
+  POSSESSION_VERIFICATION_FAILED: { weight: 10, factor: 'Proof-of-possession verification failed (incorrect verification code)' },
+};
+
+const detectRisk = async ({ product, hashes = [], aiAnalysis = {}, identitySignals = [] }) => {
   const factors = [];
   let riskScore = 0;
 
-  // 1. Duplicate image risk — similarity-based via perceptual hashing
+  // 1. Duplicate image risk — similarity-based via perceptual hashing.
+  //    Scans ALL product hashes against ALL candidate hashes and reports
+  //    the BEST (most similar) match, so factors reference the strongest
+  //    evidence rather than whichever listing happened to be scanned first.
   if (hashes && hashes.length > 0) {
     // Fetch candidate products in the same category (or all if no category)
     const candidateFilter = {
@@ -43,25 +66,27 @@ const detectRisk = async ({ product, hashes = [], aiAnalysis = {} }) => {
       .select('title aiAnalysis.imageHashes')
       .limit(500);
 
-    for (const hash of hashes) {
-      let duplicateFound = false;
-      for (const candidate of candidates) {
-        const candidateHashes = candidate.aiAnalysis?.imageHashes || [];
-        for (const candidateHash of candidateHashes) {
+    let bestMatch = null; // { distance, title }
+    for (const candidate of candidates) {
+      const candidateHashes = candidate.aiAnalysis?.imageHashes || [];
+      for (const candidateHash of candidateHashes) {
+        for (const hash of hashes) {
           const distance = hammingDistance(hash, candidateHash);
-          if (distance <= HASH_SIMILARITY_THRESHOLD) {
-            riskScore += 35;
-            const similarityPct = Math.round((1 - distance / 64) * 100);
-            factors.push(
-              `Duplicate image detected (~${similarityPct}% similar to listing "${candidate.title}", distance: ${distance})`
-            );
-            duplicateFound = true;
-            break;
+          if (distance <= HASH_SIMILARITY_THRESHOLD && (!bestMatch || distance < bestMatch.distance)) {
+            bestMatch = { distance, title: candidate.title };
           }
         }
-        if (duplicateFound) break;
       }
-      if (duplicateFound) break;
+      // Cannot do better than an exact match
+      if (bestMatch?.distance === 0) break;
+    }
+
+    if (bestMatch) {
+      riskScore += 35;
+      const similarityPct = Math.round((1 - bestMatch.distance / 64) * 100);
+      factors.push(
+        `Duplicate image detected (~${similarityPct}% similar to listing "${bestMatch.title}", distance: ${bestMatch.distance})`
+      );
     }
   }
 
@@ -117,6 +142,17 @@ const detectRisk = async ({ product, hashes = [], aiAnalysis = {} }) => {
   if (aiAnalysis.damageScore >= 60) {
     riskScore += 5;
     factors.push('High damage score detected by AI');
+  }
+
+  // 6. Product identity / provenance signals (extension — combined with
+  //    existing image/pricing/trust signals)
+  const seenSignals = new Set();
+  for (const signal of identitySignals) {
+    const config = IDENTITY_SIGNAL_WEIGHTS[signal];
+    if (!config || seenSignals.has(signal)) continue;
+    seenSignals.add(signal);
+    riskScore += config.weight;
+    factors.push(config.factor);
   }
 
   riskScore = clamp(riskScore, 0, 100);

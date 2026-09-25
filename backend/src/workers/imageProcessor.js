@@ -2,7 +2,7 @@ const { Worker } = require('bullmq');
 const { connection } = require('../queues');
 const Product = require('../models/Product');
 const Category = require('../models/Category');
-const { perceptualHashFromBuffer } = require('../services/imageHash');
+const { perceptualHashVariantsFromBuffer } = require('../services/imageHash');
 const { createCVProvider } = require('../services/cvAdapter');
 const { extractColorHistogram, downloadImageBuffer } = require('../services/imageUtils');
 const cvProvider = createCVProvider();
@@ -32,7 +32,9 @@ const imageProcessingWorker = new Worker(
 
         // Images were already uploaded to Cloudinary during the request.
         // Reuse the existing URL/publicId instead of uploading again.
-        const hash = await perceptualHashFromBuffer(buffer);
+        // Compute both the primary hash and the mirrored variant so
+        // mirror-flipped re-uploads are still detected as duplicates.
+        const { hash, mirroredHash } = await perceptualHashVariantsFromBuffer(buffer);
         
         // Extract color histogram
         const colorHistogram = await extractColorHistogram(buffer);
@@ -50,6 +52,7 @@ const imageProcessingWorker = new Worker(
           url: image.url,
           publicId: image.publicId,
           hash,
+          mirroredHash,
           colorHistogram,
           analysis: {
             conditionScore: condition.score,
@@ -111,7 +114,9 @@ const imageProcessingWorker = new Worker(
             conditionScore: Math.round(avgCondition),
             damageScore: Math.round(avgDamage),
             damageDescription: '',
-            imageHashes: results.map((r) => r.hash).filter(Boolean),
+            imageHashes: [
+              ...new Set(results.flatMap((r) => [r.hash, r.mirroredHash].filter(Boolean))),
+            ],
             priceRecommendation: {
               recommendedPrice: priceRec.recommendedPrice,
               minPrice: priceRec.minPrice,
