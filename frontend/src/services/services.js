@@ -25,6 +25,8 @@ export const productService = {
   update: (id, data) => api.put(`/products/${id}`, data),
   delete: (id) => api.delete(`/products/${id}`),
   markSold: (id) => api.patch(`/products/${id}/sold`),
+  identityStatus: (id) => api.get(`/products/${id}/identity`),
+  verifyPossession: (id, data) => api.post(`/products/${id}/identity/verify-possession`, data),
 };
 
 export const categoryService = {

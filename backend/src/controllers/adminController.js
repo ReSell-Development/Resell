@@ -5,8 +5,10 @@ const Sale = require('../models/Sale');
 const Review = require('../models/Review');
 const Category = require('../models/Category');
 const Conversation = require('../models/Conversation');
+const AuditLog = require('../models/AuditLog');
 const AppError = require('../utils/AppError');
 const { notify } = require('../services/notificationService');
+const { setIdentityStatus } = require('../services/identityVerification');
 
 const getDashboardStats = async (req, res, next) => {
   try {
@@ -217,6 +219,84 @@ const moderateProduct = async (req, res, next) => {
   }
 };
 
+/**
+ * Mark a product identity's registry status (reported_stolen / flagged /
+ * active). Admin-only (enforced by the router). Creates a hash-chained
+ * 'reported' provenance event, an AuditLog entry, and — when a report
+ * triggered the action — resolves that Report. Future listings with the
+ * same identifier are blocked (reported_stolen) or held (flagged) by
+ * the listing-creation flow. Only safe fields are ever returned — the
+ * identifier hash is never exposed.
+ */
+const markIdentityStatus = async (req, res, next) => {
+  try {
+    const { status, reportId, note } = req.body;
+
+    const identity = await setIdentityStatus({
+      identityId: req.params.id,
+      status,
+      moderatorId: req.user._id,
+      reportId,
+    });
+
+    // Hold or release the currently linked listing per the moderation flow
+    if (identity.productId) {
+      if (status === 'reported_stolen' || status === 'flagged') {
+        await Product.findByIdAndUpdate(identity.productId, {
+          status: 'flagged',
+          isFlagged: true,
+          flagReason:
+            status === 'reported_stolen'
+              ? 'Product identifier reported as stolen'
+              : 'Product identity flagged for review',
+        });
+      } else if (status === 'active') {
+        await Product.findByIdAndUpdate(identity.productId, {
+          status: 'active',
+          isFlagged: false,
+          flagReason: '',
+        });
+      }
+    }
+
+    // Audit the moderator action
+    await AuditLog.create({
+      actor: req.user._id,
+      action: 'identity_status_update',
+      targetType: 'productidentity',
+      target: identity._id,
+      metadata: { status, reportId: reportId || null, note: note || '' },
+    });
+
+    // Connect the triggering Report to the identity and resolve it
+    if (reportId) {
+      await Report.findByIdAndUpdate(
+        reportId,
+        {
+          status: 'resolved',
+          reviewedBy: req.user._id,
+          reviewedAt: new Date(),
+          action: `identity_marked_${status}`,
+        },
+        { new: true }
+      );
+    }
+
+    // Never expose the identifier hash or owner details
+    res.json({
+      success: true,
+      identity: {
+        _id: identity._id,
+        identifierType: identity.identifierType,
+        status: identity.status,
+        possessionStatus: identity.verification?.possessionStatus || 'unverified',
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
 const getAnalytics = async (req, res, next) => {
   try {
     const last30Days = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
@@ -322,5 +402,6 @@ module.exports = {
   deleteUser,
   getAllProducts,
   moderateProduct,
+  markIdentityStatus,
   getAnalytics,
 };

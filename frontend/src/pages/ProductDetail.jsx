@@ -47,6 +47,10 @@ export default function ProductDetail() {
   const [showReport, setShowReport] = useState(false);
   const [showAddressModal, setShowAddressModal] = useState(false);
   const [showOfferModal, setShowOfferModal] = useState(false);
+  const [identity, setIdentity] = useState(null);
+  const [possessCode, setPossessCode] = useState('');
+  const [possessProof, setPossessProof] = useState(null);
+  const [possessBusy, setPossessBusy] = useState(false);
 
   useEffect(() => {
     setLoading(true);
@@ -80,8 +84,54 @@ export default function ProductDetail() {
     if (user) {
       favoriteService.check(id).then((r) => setFavorited(r.data.favorited)).catch(() => {});
     }
+    // Identity/provenance status (tracked products only)
+    if (user && product.seller?._id === user._id) {
+      productService.identityStatus(id).then((r) => setIdentity(r.data)).catch(() => {});
+    }
     loadReviews(product._id);
   }, [product, user, id, loadReviews]);
+
+  const refreshIdentity = async () => {
+    try {
+      const r = await productService.identityStatus(id);
+      setIdentity(r.data);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const handleVerifyPossession = async () => {
+    if (!possessProof || !possessCode.trim()) {
+      toast.error('Add a proof photo and enter the verification code shown in it');
+      return;
+    }
+    try {
+      setPossessBusy(true);
+      const fd = new FormData();
+      fd.append('images', possessProof);
+      const up = await productService.uploadImages(fd);
+      const proofImageUrl = up.data?.images?.[0]?.url;
+      if (!proofImageUrl) throw new Error('Proof photo upload failed');
+      const { data } = await productService.verifyPossession(id, {
+        code: possessCode.trim().toUpperCase(),
+        proofImageUrl,
+      });
+      if (data.possessionStatus === 'verified') {
+        toast.success('Possession verified!');
+        setPossessCode('');
+        setPossessProof(null);
+      } else {
+        toast.error(
+          `Verification failed — ${data.remainingAttempts ?? 0} attempts remaining.`
+        );
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Verification failed');
+    } finally {
+      await refreshIdentity();
+      setPossessBusy(false);
+    }
+  };
 
   const handleFavorite = async () => {
     if (!user) {
@@ -314,6 +364,60 @@ export default function ProductDetail() {
                           </motion.div>
                         ))}
                       </div>
+                    </motion.div>
+                  )}
+
+                  {/* Proof of possession (listing owner only, tracked identities) */}
+                  {user && product.seller?._id === user._id && identity?.tracked && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="border-t border-slate-200 pt-6"
+                    >
+                      <h3 className="font-semibold mb-1">Verify Possession</h3>
+                      {identity.verification?.possessionStatus === 'verified' ? (
+                        <p className="text-sm text-emerald-600">
+                          Possession verified — buyers can see this listing has verified physical ownership.
+                        </p>
+                      ) : (
+                        <>
+                          <p className="text-sm text-slate-500 mb-3">
+                            Upload a photo of the physical product showing code{' '}
+                            <span className="font-mono font-semibold text-slate-700">
+                              {identity.possession?.verificationCode || '—'}
+                            </span>{' '}
+                            (and its serial/IMEI where possible), then enter the code below.{' '}
+                            {identity.possession?.codeExpiresAt &&
+                              `Valid until ${new Date(identity.possession.codeExpiresAt).toLocaleString()}.`}
+                            {identity.warnings?.length > 0 && (
+                              <span className="block mt-1 text-amber-600">{identity.warnings[0]}</span>
+                            )}
+                          </p>
+                          <div className="flex flex-col sm:flex-row gap-3">
+                            <input
+                              type="file"
+                              accept="image/*"
+                              onChange={(e) => setPossessProof(e.target.files?.[0] || null)}
+                              className="text-sm file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:bg-slate-100 file:text-sm"
+                            />
+                            <input
+                              type="text"
+                              value={possessCode}
+                              onChange={(e) => setPossessCode(e.target.value)}
+                              placeholder="Enter code from photo"
+                              className="input flex-1"
+                            />
+                            <button
+                              type="button"
+                              onClick={handleVerifyPossession}
+                              disabled={possessBusy}
+                              className="btn-primary whitespace-nowrap disabled:opacity-50"
+                            >
+                              {possessBusy ? 'Verifying…' : 'Verify'}
+                            </button>
+                          </div>
+                        </>
+                      )}
                     </motion.div>
                   )}
                 </div>

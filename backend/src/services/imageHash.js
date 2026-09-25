@@ -23,15 +23,38 @@ const crypto = require('crypto');
 
 const BLOCK_SIZE = 8;
 
+const DCT_SIZE = 32;
+
+// Precomputed cosine table: COS_TABLE[x][u] = cos((2x+1)·u·π / (2·N)).
+// Avoids recomputing ~65k Math.cos calls for every 32×32 DCT.
+const COS_TABLE = (() => {
+  const table = new Float64Array(DCT_SIZE * DCT_SIZE);
+  for (let x = 0; x < DCT_SIZE; x++) {
+    for (let u = 0; u < DCT_SIZE; u++) {
+      table[x * DCT_SIZE + u] = Math.cos(((2 * x + 1) * u * Math.PI) / (2 * DCT_SIZE));
+    }
+  }
+  return table;
+})();
+
 function dct2d(input, width, height) {
   const temp = new Float64Array(width * height);
   const output = new Float64Array(width * height);
+
+  // Fast path: the pHash pipeline always runs 32×32 — use the
+  // precomputed table (identical values to the direct formula).
+  const useTable = width === DCT_SIZE && height === DCT_SIZE;
+
+  const cosXU = (x, u) =>
+    useTable ? COS_TABLE[x * DCT_SIZE + u] : Math.cos(((2 * x + 1) * u * Math.PI) / (2 * width));
+  const cosYV = (y, v) =>
+    useTable ? COS_TABLE[y * DCT_SIZE + v] : Math.cos(((2 * y + 1) * v * Math.PI) / (2 * height));
 
   for (let y = 0; y < height; y++) {
     for (let u = 0; u < width; u++) {
       let sum = 0;
       for (let x = 0; x < width; x++) {
-        sum += input[y * width + x] * Math.cos(((2 * x + 1) * u * Math.PI) / (2 * width));
+        sum += input[y * width + x] * cosXU(x, u);
       }
       temp[y * width + u] = sum;
     }
@@ -41,7 +64,7 @@ function dct2d(input, width, height) {
     for (let v = 0; v < height; v++) {
       let sum = 0;
       for (let y = 0; y < height; y++) {
-        sum += temp[y * width + u] * Math.cos(((2 * y + 1) * v * Math.PI) / (2 * height));
+        sum += temp[y * width + u] * cosYV(y, v);
       }
       output[v * width + u] = sum;
     }

@@ -1,6 +1,7 @@
 const Sale = require('../models/Sale');
 const Product = require('../models/Product');
 const AppError = require('../utils/AppError');
+const { recordSaleProvenance } = require('../services/identityVerification');
 const stripeService = require('../services/stripeService');
 const { notify } = require('../services/notificationService');
 
@@ -125,6 +126,15 @@ const deliverOrder = async (req, res, next) => {
     sale.transition('delivered', req.user._id, 'Buyer confirmed receipt');
     sale.deliveredAt = new Date();
     await sale.save();
+
+    // Provenance: ownership transfers to the buyer (server-side, best-effort)
+    await recordSaleProvenance({
+      productId: sale.product ? sale.product.toString() : sale.product,
+      sellerId: sale.seller.toString(),
+      buyerId: sale.buyer.toString(),
+      transactionId: sale.stripePaymentIntentId,
+      eventType: 'ownership_transferred',
+    });
 
     const populated = await Sale.findById(sale._id)
       .populate('product', 'title images price')
