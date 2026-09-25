@@ -1,6 +1,8 @@
 const User = require('../models/User');
 const Product = require('../models/Product');
 const Review = require('../models/Review');
+const Sale = require('../models/Sale');
+const { REVIEWABLE_STATUSES } = require('../models/Sale');
 const AppError = require('../utils/AppError');
 const { calculateTrustScore } = require('../services/trustScore');
 const { findSimilar } = require('../services/similarProducts');
@@ -47,6 +49,19 @@ const getSellerTrust = async (req, res, next) => {
   }
 };
 
+/**
+ * Create a review.
+ *
+ * Verified-purchase gating: a review is only allowed for a genuine,
+ * completed purchase. Everything is verified server-side:
+ *   - the authenticated user must be the buyer of a qualifying Sale
+ *     (delivered/completed) from this seller
+ *   - the product being reviewed (if any) must be the product of that Sale
+ *   - the review is tied to the qualifying Sale, so the same purchase
+ *     cannot be reviewed twice
+ * Client-supplied buyer/sale identifiers are never trusted; the buyer is
+ * always req.user and the Sale is looked up from the DB.
+ */
 const addReview = async (req, res, next) => {
   try {
     const { rating, comment, product } = req.body;
@@ -59,21 +74,35 @@ const addReview = async (req, res, next) => {
       throw new AppError('Cannot review yourself', 400, 'INVALID');
     }
 
-    const existing = await Review.findOne({
-      seller: seller._id,
+    // Locate a qualifying purchase for the authenticated user.
+    // When a product is being reviewed, the Sale must be for that product.
+    const saleFilter = {
       buyer: req.user._id,
-    });
+      seller: seller._id,
+      status: { $in: REVIEWABLE_STATUSES },
+    };
+    if (product) saleFilter.product = product;
+
+    const qualifyingSale = await Sale.findOne(saleFilter);
+    if (!qualifyingSale) {
+      throw new AppError(
+        'You can only review after a completed purchase from this seller',
+        403,
+        'PURCHASE_REQUIRED'
+      );
+    }
+
+    // One review per qualifying transaction
+    const existing = await Review.findOne({ sale: qualifyingSale._id });
     if (existing) {
-      existing.rating = rating;
-      existing.comment = comment || '';
-      await existing.save();
-      return res.json({ success: true, review: existing });
+      throw new AppError('You have already reviewed this purchase', 409, 'REVIEW_EXISTS');
     }
 
     const review = await Review.create({
       seller: seller._id,
       buyer: req.user._id,
-      product: product || null,
+      product: qualifyingSale.product,
+      sale: qualifyingSale._id,
       rating,
       comment: comment || '',
     });

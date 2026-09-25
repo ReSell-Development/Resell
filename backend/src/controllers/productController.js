@@ -1,6 +1,9 @@
 const Product = require('../models/Product');
 const Category = require('../models/Category');
 const User = require('../models/User');
+const Review = require('../models/Review');
+const Sale = require('../models/Sale');
+const { REVIEWABLE_STATUSES } = require('../models/Sale');
 const AppError = require('../utils/AppError');
 const { uploadToCloudinary, deleteFromCloudinary } = require('../config/cloudinary');
 const {
@@ -736,6 +739,58 @@ const getSimilarProducts = async (req, res, next) => {
   }
 };
 
+/**
+ * Product reviews + a server-side eligibility hint for the requesting
+ * user. The eligibility check is advisory for UI purposes only — review
+ * creation always re-verifies the qualifying purchase server-side.
+ */
+const getProductReviews = async (req, res, next) => {
+  try {
+    const productId = req.params.id;
+
+    const product = await Product.findById(productId);
+    if (!product) throw new AppError('Product not found', 404, 'NOT_FOUND');
+
+    const reviews = await Review.find({ product: productId })
+      .populate('buyer', 'name avatar')
+      .sort({ createdAt: -1 })
+      .limit(50);
+
+    const count = reviews.length;
+    const average =
+      count > 0 ? reviews.reduce((s, r) => s + r.rating, 0) / count : 0;
+
+    let canReview = { allowed: false, reason: 'login_required' };
+    if (req.user) {
+      if (product.seller.toString() === req.user._id.toString()) {
+        canReview = { allowed: false, reason: 'own_listing' };
+      } else {
+        const qualifyingSale = await Sale.findOne({
+          buyer: req.user._id,
+          product: productId,
+          status: { $in: REVIEWABLE_STATUSES },
+        });
+        if (!qualifyingSale) {
+          canReview = { allowed: false, reason: 'purchase_required' };
+        } else if (await Review.exists({ sale: qualifyingSale._id })) {
+          canReview = { allowed: false, reason: 'already_reviewed' };
+        } else {
+          canReview = { allowed: true };
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      reviews,
+      summary: { count, average: Number(average.toFixed(2)) },
+      canReview,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
 const suggestPrice = async (req, res, next) => {
   try {
     const { category, condition, brand, originalPrice, yearsUsed } = req.query;
@@ -784,5 +839,6 @@ module.exports = {
   getMyProducts,
   getBrands,
   getSimilarProducts,
+  getProductReviews,
   suggestPrice,
 };

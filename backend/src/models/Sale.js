@@ -91,3 +91,8 @@ saleSchema.methods.transition = function (newStatus, actorId, note = '') {
 module.exports = mongoose.model('Sale', saleSchema);
 module.exports.addressSchema = addressSchema;
 module.exports.VALID_TRANSITIONS = VALID_TRANSITIONS;
+
+// Sale statuses that qualify a purchase for reviewing. A buyer may only
+// review after the order has actually been received (delivered/completed) —
+// cancelled, refunded and failed payments never qualify.
+module.exports.REVIEWABLE_STATUSES = ['delivered', 'completed'];

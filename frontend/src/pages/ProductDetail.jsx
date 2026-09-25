@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -15,6 +15,7 @@ import {
   Send,
   Tag,
   Sparkles,
+  Star,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { productService, favoriteService, chatService, reportService, sellerService, offerService } from '../services/services';
@@ -41,6 +42,7 @@ export default function ProductDetail() {
   const [trust, setTrust] = useState(null);
   const [similar, setSimilar] = useState([]);
   const [favorited, setFavorited] = useState(false);
+  const [reviewData, setReviewData] = useState({ reviews: [], summary: { count: 0, average: 0 }, canReview: { allowed: false, reason: 'login_required' } });
   const [loading, setLoading] = useState(true);
   const [showReport, setShowReport] = useState(false);
   const [showAddressModal, setShowAddressModal] = useState(false);
@@ -57,6 +59,19 @@ export default function ProductDetail() {
     productService.similar(id).then((r) => setSimilar(r.data.items)).catch(() => {});
   }, [id]);
 
+  const loadReviews = useCallback((productId) => {
+    productService
+      .reviews(productId)
+      .then((r) =>
+        setReviewData({
+          reviews: r.data.reviews || [],
+          summary: r.data.summary || { count: 0, average: 0 },
+          canReview: r.data.canReview || { allowed: false, reason: 'login_required' },
+        })
+      )
+      .catch(() => {});
+  }, []);
+
   useEffect(() => {
     if (!product) return;
     if (product.seller?._id) {
@@ -65,7 +80,8 @@ export default function ProductDetail() {
     if (user) {
       favoriteService.check(id).then((r) => setFavorited(r.data.favorited)).catch(() => {});
     }
-  }, [product, user, id]);
+    loadReviews(product._id);
+  }, [product, user, id, loadReviews]);
 
   const handleFavorite = async () => {
     if (!user) {
@@ -414,6 +430,16 @@ export default function ProductDetail() {
           </div>
         </div>
 
+        {/* Product reviews — written by verified purchasers */}
+        <ScrollReveal delay={0.2} direction="up">
+          <ProductReviews
+            productId={product._id}
+            sellerId={product.seller?._id}
+            data={reviewData}
+            onRefresh={() => loadReviews(product._id)}
+          />
+        </ScrollReveal>
+
         <AnimatePresence>
           {showReport && (
             <ReportModal
@@ -445,6 +471,127 @@ export default function ProductDetail() {
         </AnimatePresence>
       </div>
     </PageTransition>
+  );
+}
+
+/**
+ * Product reviews section. Reviews come from verified purchasers — the
+ * backend only reveals the review form (`canReview.allowed`) to users
+ * with a qualifying delivered/completed purchase, and re-verifies on
+ * submission (the frontend hint is never proof of purchase).
+ */
+function ProductReviews({ productId, sellerId, data, onRefresh }) {
+  const { reviews, summary, canReview } = data;
+  const [rating, setRating] = useState(5);
+  const [comment, setComment] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!sellerId) return;
+    setSubmitting(true);
+    try {
+      // Backend re-verifies the qualifying purchase for the authenticated
+      // user — productId/sellerId here only identify the target.
+      await sellerService.review(sellerId, { rating, comment, product: productId });
+      toast.success('Review submitted');
+      setComment('');
+      onRefresh();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Failed to submit review');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="card p-6 mt-8">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="font-display font-bold text-xl">Reviews</h3>
+        {summary.count > 0 && (
+          <div className="flex items-center gap-2">
+            <div className="flex">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <Star
+                  key={i}
+                  className={`w-4 h-4 ${
+                    i < Math.round(summary.average) ? 'fill-amber-400 text-amber-400' : 'text-slate-300'
+                  }`}
+                />
+              ))}
+            </div>
+            <span className="text-sm text-slate-500">
+              {summary.average} · {summary.count} review{summary.count === 1 ? '' : 's'}
+            </span>
+          </div>
+        )}
+      </div>
+
+      {canReview.allowed && (
+        <form onSubmit={handleSubmit} className="mb-6 p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+          <p className="text-sm font-medium text-slate-700">Review your purchase</p>
+          <div className="flex gap-1">
+            {[1, 2, 3, 4, 5].map((n) => (
+              <button
+                key={n}
+                type="button"
+                onClick={() => setRating(n)}
+                aria-label={`Rate ${n} star${n === 1 ? '' : 's'}`}
+                className="p-0.5"
+              >
+                <Star
+                  className={`w-6 h-6 transition-colors ${
+                    n <= rating ? 'fill-amber-400 text-amber-400' : 'text-slate-300 hover:text-amber-300'
+                  }`}
+                />
+              </button>
+            ))}
+          </div>
+          <textarea
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            rows={3}
+            maxLength={1000}
+            className="input"
+            placeholder="How was the item and the seller?"
+          />
+          <button type="submit" disabled={submitting} className="btn-primary inline-flex items-center gap-2">
+            <Send className="w-4 h-4" />
+            {submitting ? 'Submitting...' : 'Submit Review'}
+          </button>
+        </form>
+      )}
+
+      {reviews.length === 0 ? (
+        <p className="text-slate-500 text-sm">
+          {canReview.reason === 'purchase_required'
+            ? 'No reviews yet — only verified buyers can review this item'
+            : 'No reviews yet'}
+        </p>
+      ) : (
+        <div className="space-y-4">
+          {reviews.map((r) => (
+            <div key={r._id} className="border-b last:border-0 pb-4 last:pb-0">
+              <div className="flex items-center gap-2 mb-1">
+                <div className="flex">
+                  {Array.from({ length: 5 }).map((_, i) => (
+                    <Star
+                      key={i}
+                      className={`w-4 h-4 ${
+                        i < r.rating ? 'fill-amber-400 text-amber-400' : 'text-slate-300'
+                      }`}
+                    />
+                  ))}
+                </div>
+                <span className="text-sm text-slate-500">{r.buyer?.name || 'Verified buyer'}</span>
+                <span className="text-xs text-slate-400">{formatDate(r.createdAt)}</span>
+              </div>
+              {r.comment && <p className="text-sm text-slate-700">{r.comment}</p>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

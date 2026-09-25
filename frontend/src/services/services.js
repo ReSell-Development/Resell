@@ -15,6 +15,7 @@ export const productService = {
   my: () => api.get('/products/mine'),
   brands: () => api.get('/products/brands'),
   similar: (id) => api.get(`/products/${id}/similar`),
+  reviews: (id) => api.get(`/products/${id}/reviews`),
   suggestPrice: (params) => api.get('/products/suggest-price', { params }),
   uploadImages: (formData) =>
     api.post('/products/upload-images', formData, {
