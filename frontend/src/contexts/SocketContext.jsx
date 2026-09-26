@@ -138,9 +138,9 @@ export const SocketProvider = ({ children }) => {
     socket.on('message:new', handleIncomingMessage);
 
     // Keep listeners map in sync for Chat.jsx handlers (re-attach on new socket)
-    for (const [event, handler] of listenersRef.current.entries()) {
+    for (const [event, handlers] of listenersRef.current.entries()) {
       if (event !== 'chat:message' && event !== 'message:new') {
-        socket.on(event, handler);
+        handlers.forEach((handler) => socket.on(event, handler));
       }
     }
 
@@ -157,19 +157,20 @@ export const SocketProvider = ({ children }) => {
   }, [user, fetchUnreadCount]);
 
   const on = useCallback((event, handler) => {
-    listenersRef.current.set(event, handler);
+    if (!listenersRef.current.has(event)) listenersRef.current.set(event, new Set());
+    listenersRef.current.get(event).add(handler);
     if (socketRef.current) socketRef.current.on(event, handler);
   }, []);
 
   const off = useCallback((event, handler) => {
-    // Remove specific handler if provided, else remove all for event
-    if (handler && socketRef.current) {
-      socketRef.current.off(event, handler);
-    } else {
-      listenersRef.current.delete(event);
-      if (socketRef.current) socketRef.current.off(event);
+    if (handler) {
+      listenersRef.current.get(event)?.delete(handler);
+      if (listenersRef.current.get(event)?.size === 0) listenersRef.current.delete(event);
+      socketRef.current?.off(event, handler);
+      return;
     }
-    if (!handler) listenersRef.current.delete(event);
+    listenersRef.current.delete(event);
+    socketRef.current?.off(event);
   }, []);
 
   const emit = useCallback((event, payload) => {

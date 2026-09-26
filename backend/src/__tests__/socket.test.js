@@ -4,12 +4,14 @@ const Client = require('socket.io-client');
 const jwt = require('jsonwebtoken');
 const mongoose = require('mongoose');
 const User = require('../models/User');
+const Conversation = require('../models/Conversation');
+const Message = require('../models/Message');
 const setupSocket = require('../sockets');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'test-secret';
 
 let httpServer, io, port;
-let userA, userB, tokenA, tokenB;
+let userA, userB, tokenA, tokenB, conversation;
 
 beforeAll(async () => {
   process.env.JWT_SECRET = JWT_SECRET;
@@ -31,6 +33,7 @@ beforeEach(async () => {
   userB = await User.create({ name: 'Bob', email: `bob-${Date.now()}-${Math.random().toString(36).slice(2)}@test.com`, password: 'pass123' });
   tokenA = jwt.sign({ id: userA._id.toString() }, JWT_SECRET, { expiresIn: '1h' });
   tokenB = jwt.sign({ id: userB._id.toString() }, JWT_SECRET, { expiresIn: '1h' });
+  conversation = await Conversation.create({ participants: [userA._id, userB._id] });
 });
 
 afterAll(async () => {
@@ -106,7 +109,8 @@ describe('WebRTC Socket Relay', () => {
       userToCall: userB._id.toString(),
       signalData: { type: 'offer', sdp: 'fake-sdp' },
       from: userA._id.toString(),
-      conversationId: null,
+      conversationId: conversation._id.toString(),
+      callId: 'call-relay-1',
     });
 
     const data = await incoming;
@@ -129,7 +133,8 @@ describe('WebRTC Socket Relay', () => {
       userToCall: userB._id.toString(),
       signalData: { type: 'offer', sdp: 'offer-sdp' },
       from: userA._id.toString(),
-      conversationId: null,
+      conversationId: conversation._id.toString(),
+      callId: 'call-relay-2',
     });
     await incoming;
 
@@ -137,6 +142,7 @@ describe('WebRTC Socket Relay', () => {
     clientB.emit('answerCall', {
       to: userA._id.toString(),
       signal: { type: 'answer', sdp: 'answer-sdp' },
+      callId: 'call-relay-2',
     });
 
     const data = await accepted;
@@ -153,10 +159,15 @@ describe('WebRTC Socket Relay', () => {
     await drainStatus(clientA);
     await drainStatus(clientB);
 
+    const incoming = waitFor(clientB, 'incomingCall');
+    clientA.emit('callUser', { userToCall: userB._id.toString(), signalData: { type: 'offer' }, conversationId: conversation._id.toString(), callId: 'call-ice-1' });
+    await incoming;
+
     const candidateFromB = waitFor(clientA, 'iceCandidate');
     clientB.emit('iceCandidate', {
       to: userA._id.toString(),
       candidate: { candidate: 'candidate-1', sdpMid: '0' },
+      callId: 'call-ice-1',
     });
     const data1 = await candidateFromB;
     expect(data1.candidate).toEqual({ candidate: 'candidate-1', sdpMid: '0' });
@@ -165,6 +176,7 @@ describe('WebRTC Socket Relay', () => {
     clientA.emit('iceCandidate', {
       to: userB._id.toString(),
       candidate: { candidate: 'candidate-2', sdpMid: '0' },
+      callId: 'call-ice-1',
     });
     const data2 = await candidateFromA;
     expect(data2.candidate).toEqual({ candidate: 'candidate-2', sdpMid: '0' });
@@ -180,7 +192,10 @@ describe('WebRTC Socket Relay', () => {
     await drainStatus(clientB);
 
     const ended = waitFor(clientB, 'callEnded');
-    clientA.emit('endCall', { to: userB._id.toString() });
+    const incoming = waitFor(clientB, 'incomingCall');
+    clientA.emit('callUser', { userToCall: userB._id.toString(), signalData: { type: 'offer' }, conversationId: conversation._id.toString(), callId: 'call-end-1' });
+    await incoming;
+    clientA.emit('endCall', { to: userB._id.toString(), callId: 'call-end-1' });
     await ended;
 
     clientA.close();
@@ -208,7 +223,8 @@ describe('WebRTC Socket Relay', () => {
       userToCall: userB._id.toString(),
       signalData: { type: 'offer', sdp: 'test' },
       from: userA._id.toString(),
-      conversationId: null,
+      conversationId: conversation._id.toString(),
+      callId: 'call-relay-3',
     });
     await incomingB;
 
@@ -218,5 +234,46 @@ describe('WebRTC Socket Relay', () => {
     clientA.close();
     clientB.close();
     clientC.close();
+  });
+
+  it('persists one authorized call record without signaling data', async () => {
+    const clientA = await connectClient(tokenA);
+    const clientB = await connectClient(tokenB);
+    await drainStatus(clientA);
+    await drainStatus(clientB);
+    const incoming = waitFor(clientB, 'incomingCall');
+    clientA.emit('callUser', {
+      userToCall: userB._id.toString(),
+      signalData: { type: 'offer', sdp: 'never-store-this' },
+      conversationId: conversation._id.toString(),
+      callId: 'call-history-1',
+    });
+    await incoming;
+    const updated = waitFor(clientB, 'call:updated');
+    clientB.emit('endCall', { to: userA._id.toString(), callId: 'call-history-1', reason: 'rejected' });
+    const event = await updated;
+    const record = await Message.findOne({ 'call.callId': 'call-history-1' }).lean();
+    expect(record.type).toBe('call');
+    expect(record.call.outcome).toBe('rejected');
+    expect(record.call.durationSeconds).toBe(0);
+    expect(JSON.stringify(record)).not.toContain('never-store-this');
+    expect(event._id).toBe(record._id.toString());
+    clientA.close();
+    clientB.close();
+  });
+
+  it('does not relay calls to a user outside the conversation', async () => {
+    const clientA = await connectClient(tokenA);
+    const clientB = await connectClient(tokenB);
+    await drainStatus(clientA);
+    await drainStatus(clientB);
+    let relayed = false;
+    clientB.on('incomingCall', () => { relayed = true; });
+    clientA.emit('callUser', { userToCall: userB._id.toString(), signalData: { type: 'offer' }, conversationId: new mongoose.Types.ObjectId().toString(), callId: 'call-denied-1' });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(relayed).toBe(false);
+    expect(await Message.countDocuments({ 'call.callId': 'call-denied-1' })).toBe(0);
+    clientA.close();
+    clientB.close();
   });
 });

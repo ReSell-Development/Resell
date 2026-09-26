@@ -11,6 +11,8 @@ import {
   CheckCheck,
   Image as ImageIcon,
   Phone,
+  PhoneIncoming,
+  PhoneMissed,
 } from 'lucide-react';
 import CallModal from '../components/CallModal';
 import toast from 'react-hot-toast';
@@ -141,9 +143,16 @@ export default function Chat() {
     };
     on('chat:message', handleNew);
     on('message:new', handleNew);
+    const handleCallUpdated = (msg) => {
+      if (msg.conversation === activeConv?._id) {
+        setMessages((prev) => prev.map((item) => item._id === msg._id ? msg : item));
+      }
+    };
+    on('call:updated', handleCallUpdated);
     return () => {
-      off('chat:message');
-      off('message:new');
+      off('chat:message', handleNew);
+      off('message:new', handleNew);
+      off('call:updated', handleCallUpdated);
     };
   }, [activeConv, on, off, clearUnread]);
 
@@ -158,7 +167,7 @@ export default function Chat() {
       }).catch(() => {});
     };
     on('conversation:update', handleConvUpdate);
-    return () => off('conversation:update');
+    return () => off('conversation:update', handleConvUpdate);
   }, [on, off, setUnread, user._id]);
 
   // Handle read receipts
@@ -180,7 +189,7 @@ export default function Chat() {
       }
     };
     on('conversation:read', handleRead);
-    return () => off('conversation:read');
+    return () => off('conversation:read', handleRead);
   }, [activeConv, user._id, on, off]);
 
   // Socket error feedback (backend emits chat:error on socket send failure)
@@ -190,7 +199,7 @@ export default function Chat() {
       toast.error(payload?.message || 'Message failed on server');
     };
     on('chat:error', handleChatError);
-    return () => off('chat:error');
+    return () => off('chat:error', handleChatError);
   }, [on, off]);
 
   // Typing indicators
@@ -204,8 +213,8 @@ export default function Chat() {
     on('typing:start', handleTyping);
     on('typing:stop', handleStopTyping);
     return () => {
-      off('typing:start');
-      off('typing:stop');
+      off('typing:start', handleTyping);
+      off('typing:stop', handleStopTyping);
     };
   }, [activeConv, user._id, on, off]);
 
@@ -308,6 +317,19 @@ export default function Chat() {
   const getUnreadCount = (conv) => conv.unreadCounts?.[user._id] || 0;
 
   const isOnline = (userId) => onlineUsers.has(userId);
+
+  const callSummary = (msg) => {
+    const outgoing = String(msg.sender?._id || msg.sender) === String(user._id);
+    const outcome = msg.call?.outcome;
+    if (outcome === 'missed') return 'Missed call';
+    if (outcome === 'rejected') return outgoing ? 'Call declined' : 'Declined call';
+    if (outcome === 'cancelled') return outgoing ? 'Cancelled call' : 'Missed call';
+    if (outcome === 'completed') {
+      const seconds = msg.call?.durationSeconds || 0;
+      return `${outgoing ? 'Outgoing' : 'Incoming'} call · ${seconds >= 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds}s`}`;
+    }
+    return `${outgoing ? 'Outgoing' : 'Incoming'} call`;
+  };
 
   if (loading) return <Loader />;
 
@@ -499,7 +521,7 @@ export default function Chat() {
                               onClick={() => {
                                 const target = activeConv.participants.find((p) => p._id !== user._id);
                                 if (target && callModalRef.current) {
-                                  callModalRef.current.startCall(target._id, target.name);
+                                  callModalRef.current.startCall(target._id, target.name, activeConv._id);
                                 }
                               }}
                               className="p-2 rounded-full bg-brand-50 text-brand-600 hover:bg-brand-100 transition ml-1"
@@ -544,6 +566,14 @@ export default function Chat() {
                                     : 'bg-slate-100 text-slate-900'
                                 )}
                               >
+                                {msg.type === 'call' && (
+                                  <div className="flex items-center gap-2 text-sm font-medium">
+                                    {['missed', 'rejected', 'cancelled'].includes(msg.call?.outcome)
+                                      ? <PhoneMissed className="w-4 h-4 text-red-500" />
+                                      : <PhoneIncoming className="w-4 h-4 text-brand-600" />}
+                                    {callSummary(msg)}
+                                  </div>
+                                )}
                                 {msg.type === 'image' && msg.attachments?.length > 0 && (
                                   <div className="mb-2 flex flex-wrap gap-1">
                                     {msg.attachments.map((att, i) => (
@@ -556,7 +586,7 @@ export default function Chat() {
                                     ))}
                                   </div>
                                 )}
-                                {msg.content && (
+                                {msg.content && msg.type !== 'call' && (
                                   <p className="text-sm leading-relaxed">{msg.content}</p>
                                 )}
                                 <div className={cn(
@@ -564,7 +594,7 @@ export default function Chat() {
                                   isMe ? 'text-white/70' : 'text-slate-400'
                                 )}>
                                   <span className="text-[10px]">{formatTime(msg.createdAt)}</span>
-                                  {isMe && (
+                                  {isMe && msg.type !== 'call' && (
                                     <>
                                       {readByOthers || msg.status === 'read' ? (
                                         <CheckCheck className="w-3.5 h-3.5 text-blue-300" />

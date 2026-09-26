@@ -29,6 +29,7 @@ const CallModal = forwardRef(function CallModal(_, ref) {
   const streamRef = useRef();
   const pendingSignalRef = useRef(null);
   const pendingCallerRef = useRef(null);
+  const callIdRef = useRef(null);
 
   const cleanup = () => {
     if (connectionRef.current) {
@@ -41,6 +42,7 @@ const CallModal = forwardRef(function CallModal(_, ref) {
     }
     pendingSignalRef.current = null;
     pendingCallerRef.current = null;
+    callIdRef.current = null;
     setReceivingCall(false);
     setCallAccepted(false);
     setCallEnded(false);
@@ -50,10 +52,10 @@ const CallModal = forwardRef(function CallModal(_, ref) {
     setCalling(false);
   };
 
-  const endCall = (emitEvent = true) => {
+  const endCall = (emitEvent = true, reason = 'cancelled') => {
     setCallEnded(true);
     if (emitEvent && activeCallTo && socket) {
-      emit('endCall', { to: activeCallTo });
+      emit('endCall', { to: activeCallTo, callId: callIdRef.current, reason });
     }
     cleanup();
   };
@@ -64,6 +66,7 @@ const CallModal = forwardRef(function CallModal(_, ref) {
     const handleIncoming = (data) => {
       pendingSignalRef.current = data.signal;
       pendingCallerRef.current = data.from;
+      callIdRef.current = data.callId;
       setReceivingCall(true);
       setCallerName(data.callerName);
       setActiveCallTo(data.from);
@@ -98,10 +101,10 @@ const CallModal = forwardRef(function CallModal(_, ref) {
     on('callEnded', handleEnded);
 
     return () => {
-      off('incomingCall');
-      off('callAccepted');
-      off('iceCandidate');
-      off('callEnded');
+      off('incomingCall', handleIncoming);
+      off('callAccepted', handleAccepted);
+      off('iceCandidate', handleIce);
+      off('callEnded', handleEnded);
     };
   }, [socket, on, off]);
 
@@ -131,7 +134,7 @@ const CallModal = forwardRef(function CallModal(_, ref) {
 
     peer.onicecandidate = (event) => {
       if (event.candidate && remoteUserId) {
-        emit('iceCandidate', { to: remoteUserId, candidate: event.candidate });
+        emit('iceCandidate', { to: remoteUserId, candidate: event.candidate, callId: callIdRef.current });
       }
     };
 
@@ -145,7 +148,8 @@ const CallModal = forwardRef(function CallModal(_, ref) {
     return peer;
   };
 
-  const startCall = async (targetUserId, targetName) => {
+  const startCall = async (targetUserId, targetName, conversationId) => {
+    if (!conversationId) return;
     const stream = await getMedia();
     if (!stream) return;
 
@@ -155,6 +159,8 @@ const CallModal = forwardRef(function CallModal(_, ref) {
     setCallAccepted(false);
 
     const peer = createPeer(stream, targetUserId);
+    const callId = crypto.randomUUID();
+    callIdRef.current = callId;
 
     peer._answered = false;
 
@@ -164,8 +170,8 @@ const CallModal = forwardRef(function CallModal(_, ref) {
     emit('callUser', {
       userToCall: targetUserId,
       signalData: offer,
-      from: user._id,
-      conversationId: null,
+      conversationId,
+      callId,
     });
   };
 
@@ -192,7 +198,7 @@ const CallModal = forwardRef(function CallModal(_, ref) {
     const answer = await peer.createAnswer();
     await peer.setLocalDescription(answer);
 
-    emit('answerCall', { signal: answer, to: activeCallTo });
+    emit('answerCall', { signal: answer, to: activeCallTo, callId: callIdRef.current });
   };
 
   const toggleMute = () => {
@@ -227,7 +233,7 @@ const CallModal = forwardRef(function CallModal(_, ref) {
             <h3 className="font-display font-bold text-lg text-slate-900">Calling...</h3>
             <p className="text-sm text-slate-500">{callerName}</p>
             <button
-              onClick={() => endCall(true)}
+              onClick={() => endCall(true, 'cancelled')}
               className="mt-2 flex items-center gap-2 px-5 py-2.5 rounded-full bg-red-500 text-white hover:bg-red-600 transition text-sm font-medium"
             >
               <PhoneOff className="w-4 h-4" /> Cancel
@@ -250,7 +256,7 @@ const CallModal = forwardRef(function CallModal(_, ref) {
                 <Phone className="w-4 h-4" /> Accept
               </button>
               <button
-                onClick={() => endCall(true)}
+                onClick={() => endCall(true, 'rejected')}
                 className="flex items-center gap-2 px-5 py-2.5 rounded-full bg-red-500 text-white hover:bg-red-600 transition text-sm font-medium"
               >
                 <PhoneOff className="w-4 h-4" /> Decline
@@ -279,7 +285,7 @@ const CallModal = forwardRef(function CallModal(_, ref) {
                 {isMuted ? 'Unmute' : 'Mute'}
               </button>
               <button
-                onClick={() => endCall(true)}
+                onClick={() => endCall(true, 'completed')}
                 className="flex items-center gap-2 px-5 py-2.5 rounded-full bg-red-500 text-white hover:bg-red-600 transition text-sm font-medium"
               >
                 <PhoneOff className="w-4 h-4" /> End Call

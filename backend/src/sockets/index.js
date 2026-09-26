@@ -6,6 +6,17 @@ const { toKey } = require('../utils/mongoId');
 
 // Server-side online users tracking: userId -> Set of socketIds (handles multiple tabs)
 const onlineUsers = new Map();
+const activeCalls = new Map();
+
+const isParticipant = (conversation, userId) =>
+  conversation.participants.some((participant) => toKey(participant) === String(userId));
+
+const publishCallMessage = (io, conversation, message, event = 'chat:message') => {
+  conversation.participants.forEach((participant) => {
+    io.to(`user:${participant.toString()}`).emit(event, message);
+    io.to(`user:${participant.toString()}`).emit('conversation:update', { conversationId: conversation._id });
+  });
+};
 
 const setupSocket = (io) => {
   io.use(async (socket, next) => {
@@ -66,12 +77,16 @@ const setupSocket = (io) => {
       socket.join(`conversation:${conv._id.toString()}`);
     }
 
-    socket.on('conversation:join', (conversationId) => {
-      socket.join(`conversation:${conversationId}`);
+    socket.on('conversation:join', async (conversationId) => {
+      if (!conversationId) return;
+      const conversation = await Conversation.findOne({ _id: conversationId, participants: userId }).lean().catch(() => null);
+      if (conversation) socket.join(`conversation:${conversationId}`);
     });
 
-    socket.on('conversation:leave', (conversationId) => {
-      socket.leave(`conversation:${conversationId}`);
+    socket.on('conversation:leave', async (conversationId) => {
+      if (!conversationId) return;
+      const conversation = await Conversation.findOne({ _id: conversationId, participants: userId }).lean().catch(() => null);
+      if (conversation) socket.leave(`conversation:${conversationId}`);
     });
 
     // Chat message sending via socket
@@ -181,29 +196,60 @@ const setupSocket = (io) => {
 
     // ── WebRTC Voice Calling Signaling ──────────────────────────────────────
 
-    socket.on('callUser', (data) => {
-      const { userToCall, signalData, from, conversationId } = data;
-      io.to(`user:${userToCall}`).emit('incomingCall', {
-        signal: signalData,
-        from,
-        callerName: socket.user.name,
-        conversationId,
-      });
+    socket.on('callUser', async (data = {}) => {
+      try {
+        const { userToCall, signalData, conversationId, callId } = data;
+        if (!userToCall || !conversationId || !callId || typeof callId !== 'string' || callId.length > 100) return;
+        const conversation = await Conversation.findById(conversationId);
+        if (!conversation || !isParticipant(conversation, userId) || !isParticipant(conversation, userToCall) || String(userToCall) === userId) return;
+        if (activeCalls.has(callId)) return;
+
+        const callMessage = await Message.create({
+          conversation: conversation._id,
+          sender: userId,
+          type: 'call',
+          readBy: [{ user: userId, readAt: new Date() }],
+          call: { callId, outcome: 'outgoing', startedAt: new Date() },
+        });
+        conversation.lastMessage = callMessage._id;
+        conversation.lastMessageAt = callMessage.createdAt;
+        await conversation.save();
+        const populated = await Message.findById(callMessage._id).populate('sender', 'name avatar');
+        activeCalls.set(callId, { callerId: userId, calleeId: String(userToCall), conversationId: String(conversation._id), messageId: String(callMessage._id), acceptedAt: null });
+        publishCallMessage(io, conversation, populated);
+        io.to(`user:${userToCall}`).emit('incomingCall', { signal: signalData, from: userId, callerName: socket.user.name, conversationId, callId });
+      } catch (err) {
+        socket.emit('call:error', { message: 'Unable to start call' });
+      }
     });
 
-    socket.on('answerCall', (data) => {
-      const { to, signal } = data;
-      io.to(`user:${to}`).emit('callAccepted', { signal });
+    socket.on('answerCall', (data = {}) => {
+      const { to, signal, callId } = data;
+      const call = activeCalls.get(callId);
+      if (!call || call.calleeId !== userId || call.callerId !== String(to)) return;
+      call.acceptedAt = new Date();
+      io.to(`user:${call.callerId}`).emit('callAccepted', { signal, callId });
     });
 
-    socket.on('iceCandidate', (data) => {
-      const { to, candidate } = data;
-      io.to(`user:${to}`).emit('iceCandidate', { candidate });
+    socket.on('iceCandidate', (data = {}) => {
+      const { to, candidate, callId } = data;
+      const call = activeCalls.get(callId);
+      if (!call || ![call.callerId, call.calleeId].includes(userId) || ![call.callerId, call.calleeId].includes(String(to)) || String(to) === userId) return;
+      io.to(`user:${to}`).emit('iceCandidate', { candidate, callId });
     });
 
-    socket.on('endCall', (data) => {
-      const { to } = data;
-      io.to(`user:${to}`).emit('callEnded');
+    socket.on('endCall', async (data = {}) => {
+      const { to, callId, reason } = data;
+      const call = activeCalls.get(callId);
+      if (!call || ![call.callerId, call.calleeId].includes(userId) || ![call.callerId, call.calleeId].includes(String(to)) || String(to) === userId) return;
+      activeCalls.delete(callId);
+      const endedAt = new Date();
+      const durationSeconds = call.acceptedAt ? Math.max(0, Math.round((endedAt - call.acceptedAt) / 1000)) : 0;
+      const outcome = call.acceptedAt ? 'completed' : (reason === 'rejected' ? 'rejected' : reason === 'missed' ? 'missed' : 'cancelled');
+      const message = await Message.findByIdAndUpdate(call.messageId, { $set: { 'call.outcome': outcome, 'call.durationSeconds': durationSeconds, 'call.endedAt': endedAt } }, { new: true }).populate('sender', 'name avatar');
+      const conversation = await Conversation.findById(call.conversationId);
+      if (message && conversation) publishCallMessage(io, conversation, message, 'call:updated');
+      io.to(`user:${to}`).emit('callEnded', { callId });
     });
 
     socket.on('disconnect', async () => {
@@ -220,6 +266,22 @@ const setupSocket = (io) => {
           try {
             await User.updateOne({ _id: userId }, { lastSeen: new Date() });
           } catch (_) {}
+          // A caller/callee may close the tab without pressing an action. Finalize
+          // any pending history entry once their last socket has disconnected.
+          for (const [callId, call] of activeCalls.entries()) {
+            if (call.callerId !== userId && call.calleeId !== userId) continue;
+            activeCalls.delete(callId);
+            const endedAt = new Date();
+            const durationSeconds = call.acceptedAt ? Math.max(0, Math.round((endedAt - call.acceptedAt) / 1000)) : 0;
+            const outcome = call.acceptedAt ? 'completed' : (call.calleeId === userId ? 'missed' : 'cancelled');
+            const message = await Message.findByIdAndUpdate(call.messageId, {
+              $set: { 'call.outcome': outcome, 'call.durationSeconds': durationSeconds, 'call.endedAt': endedAt },
+            }, { new: true }).populate('sender', 'name avatar');
+            const conversation = await Conversation.findById(call.conversationId);
+            if (message && conversation) publishCallMessage(io, conversation, message, 'call:updated');
+            const otherUserId = call.callerId === userId ? call.calleeId : call.callerId;
+            io.to(`user:${otherUserId}`).emit('callEnded', { callId });
+          }
           io.emit('user:status', { userId, online: false, lastSeen: new Date() });
         }
       }
