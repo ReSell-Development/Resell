@@ -75,11 +75,15 @@ cd backend && npm run seed -- --force
 
 | Feature | Description |
 |---|---|
-| **Image Fraud Detection** | Multi-layer pipeline: perceptual hashing to CNN fingerprinting to CLIP vector similarity to LightGBM classifier |
+| **Image Fraud Detection** | Multi-layer pipeline: perceptual hashing (6-hash orientation set) to CNN fingerprinting to CLIP vector similarity to LightGBM classifier |
 | **Product Identity** | Serial / IMEI / VIN registry with cryptographic possession verification and provenance chain |
-| **AI Price Recommendation** | Depreciation model + market comparables + visual condition adjustment |
+| **AI Price Recommendation** | Depreciation model + market comparables + visual condition adjustment, blended with the ML quantile estimate (`ML_BLEND_WEIGHT`) |
 | **MobileNet Auto-Category** | Automatic product category suggestion from uploaded images |
-| **Seller Trust Score** | Transparent 0-100 score with per-component breakdown |
+| **Multi-Object Handling** | COCO-SSD per-crop classification + primary-item selection, so bundle photos are categorised and fingerprinted by the *item* rather than the arrangement |
+| **Scam-Text Detection** | Lexical analyzer (contact info, urgency clichés, formatting abuse, urgency × lowball interaction) feeding the same risk score — capped so text alone can never flag a listing |
+| **Listing Velocity Signals** | Behavioral listing-burst detection (new account vs established), capped and non-stacking |
+| **Seller Trust Score** | Transparent 0-100 score with per-component breakdown and a repeat-buyer concentration cap |
+| **Graceful ML Degradation** | Every ML stage degrades to a local heuristic when the Python ML service is down — analysis is never fabricated and listing creation is never blocked |
 | **Real-Time Chat & Offers** | Socket.IO-powered negotiation with offer countering |
 | **Stripe Checkout** | Secure end-to-end payment with webhook verification |
 | **Multi-Currency** | Live exchange rates with a daily scheduler |
@@ -132,15 +136,22 @@ User uploads images
         v
   imageProcessor Worker:
     +- 1. pHash (64-bit DCT perceptual hash + 6-hash set: plain/mirror/r90/r180/r270/vflip)
-    +- 2. MobileNet category classification
-    +- 3. Condition scoring (brightness / contrast / edge density)
-    +- 4. Damage scoring (heuristic pixel analysis)
-    +- 5. CNN feature extraction -> cnnFeatures stored per image
+    +- 2. MobileNet category classification (+ COCO-SSD multi-object crops, §7.12)
+    +- 3. Condition scoring (brightness / contrast / sharpness)
+    +- 4. Damage scoring (heuristic edge-density pixel analysis)
+    +- 5. ML /extract-cnn image embedding -> 512-D CLIP vector stored under legacy cnnFeatures
     +- 6. ML Service: CLIP embedding -> vector stored
-    +- 7. Identity verification (serial/IMEI/VIN registry check)
-    +- 8. Product fingerprint visual similarity check
-    +- 9. Fraud risk score computed & product document updated
+    +- 7. ML Service: price estimate (kNN quantiles) + fraud check (v2, shadow)
+    +- 8. Identity verification (serial/IMEI/VIN registry check)
+    +- 9. Product fingerprint visual similarity check (supporting-only)
+    +- 10. Description exact / near-duplicate + scam-text + image-text +
+           category-agreement + cross-category + velocity signals
+    +- 11. v1/v2 fusion -> fraud risk score & product document updated
 ```
+
+> Ordering note: the list above is the conceptual pipeline (§7.1). The exact
+> execution order — including which stages run in parallel and which run in a
+> non-blocking `setImmediate` block — is traced step by step in **§7.13 Part B.1**.
 
 ---
 
@@ -181,7 +192,7 @@ User uploads images
 | Vision Model | CLIP ViT-B/32 (open-clip-torch) |
 | Fraud Classifier | LightGBM (gradient boosted trees) |
 | Price Estimation | kNN + quantile regression |
-| ANN Search | HNSW index (via hnswlib) |
+| ANN Search | HNSW index (FAISS `IndexHNSWFlat`, H=32, efSearch=64) |
 | Calibration | Isotonic / Sigmoid probability calibration |
 
 ---
@@ -382,6 +393,10 @@ Image Upload
     +- Step 10: Aggregate (v1 + v2 fusion) -> product.aiAnalysis updated
 ```
 
+> This is the conceptual stage list. The exact execution order in the worker — including the COCO-SSD
+> multi-object stage (§7.12), the parallel Sharp/TF.js batch, and the non-blocking `setImmediate`
+> CNN-extraction block — is traced step by step in **§7.13 Part B.1**.
+
 ### 7.2 Perceptual Hashing (pHash)
 
 **File:** `backend/src/services/imageHash.js`
@@ -499,17 +514,17 @@ The system fuses two independent signals:
 
 **File:** `backend/src/services/productFingerprint.js`
 
-While pHash detects **identical image copies**, the CNN fingerprint detects **the same physical product appearance** across different photos (different angles, backgrounds, lighting).
+While pHash detects **identical image copies**, the visual fingerprint compares per-image vectors across listings. The persisted field is named `cnnFeatures`, but the current worker fills it through the ML service's `/extract-cnn` compatibility endpoint, which calls the CLIP image encoder and returns a 512-dimensional vector when OpenCLIP is loaded. If OpenCLIP is unavailable, that endpoint returns the model wrapper's deterministic fallback vector instead. The field name and the Product schema's MobileNet comment are therefore stale; they do not describe the current whole-image writer. MobileNet crop embeddings are produced separately by `imageClassifier.embedBuffer()`.
 
 #### How It Works
 
 ```
-Per listing: collect all images with cnnFeatures (MobileNet embeddings)
+Per listing: collect all images with cnnFeatures (currently /extract-cnn CLIP vectors)
           |
           v
 Build aggregate fingerprint:
-  - Unit-normalized mean of all per-image feature vectors
-  - Creates a single representative vector for the listing
+  - Unit-normalized mean of same-length per-image feature vectors
+  - Creates one representative whole-image vector for the listing
           |
           v
 Cross-listing comparison (up to 200 candidates):
@@ -517,13 +532,16 @@ Cross-listing comparison (up to 200 candidates):
     For each image in listing B:
       cosine_similarity(featureA, featureB)
     Keep best match per A-image
-  aggregateSimilarity = mean of all best matches
+  aggregateSimilarity = mean of best matches
+  signal similarity = strongest valid single-pair cosine
           |
           v
 Thresholds (configurable via env vars):
   MEDIUM_SIMILARITY_THRESHOLD = 0.90  -> supporting signal (weight: 10)
   STRONG_SIMILARITY_THRESHOLD = 0.97  -> supporting signal (weight: 20)
 ```
+
+`buildProductFingerprint()` can append a primary-object crop embedding when the caller supplies `aiAnalysis.detectedObjects`. The production `assessVisualSimilarity()` queries currently select only `images.cnnFeatures`, however, so they do not load those crop embeddings; the live cross-listing scan compares the stored whole-image vectors. Different-length vectors are skipped. The signal is supporting evidence, not proof that two listings are the same physical item.
 
 > **Important design decision:** Visual similarity alone is **never proof of fraud**. Two sellers may legitimately own the same model (e.g., iPhone 15 Pro). The visual fingerprint is always a *supporting signal* combined with other evidence. It can never push a listing to high risk by itself.
 
@@ -584,14 +602,24 @@ These scores feed into:
 
 A product registry for physical identifiers (serial numbers, IMEI, VIN).
 
+> **Where it runs:** `verifyOwnershipForListing()` is called **synchronously** by
+> `productController.createProduct()` / `updateProduct()` — not by the image worker — so an
+> ownership mismatch or a stolen-registry hit rejects the request immediately (**403
+> `OWNERSHIP_MISMATCH`** / **403 `IDENTITY_BLOCKED`**). The signals it emits are combined with the
+> image/price/trust signals by `detectRisk()` (§7.9). Only categories that are identifier-eligible
+> (explicit `requiresIdentifier` flag, or a slug/name keyword match) collect identifiers, and the
+> type must make sense for the category (IMEI → phone-like, VIN → vehicle-like, serial → every).
+
 #### Ownership Lifecycle
 
 ```
 NEW identifier submitted
-    -> Hash identifier (SHA-256, never stored raw)
+    -> Normalize identifier (IMEI = 15 digits, VIN = 17 alphanumerics,
+       serial >= 4 alphanumerics)
+    -> Hash with HMAC-SHA256 keyed by IDENTIFIER_HASH_SALT (never stored raw)
     -> Create ProductIdentity record
-    -> Issue 6-digit verification code (TOTP-like)
-    -> Seller verifies by entering the code (proof-of-possession)
+    -> Issue 6-character possession-verification code (random, 24h TTL)
+    -> Seller verifies by entering the code beside proof photo (proof-of-possession)
 
 EXISTING identifier submitted
     +- Same owner?              -> Legitimate relist (low risk)
@@ -694,7 +722,9 @@ recommendedPrice +/- 15% -> [minPrice, maxPrice]
 Confidence score:
   0.5 base
   +0.20 if MSRP provided
-  +0.10 if comparables provided
+  +0.10 if comparables provided (granted only on the MSRP path — when there is
+        no MSRP the median-of-comparables base already accounts for that evidence,
+        so granting it again would double-count the same data)
   +0.10 if CV score available
   +0.05 if damage score available
   Max: 0.95
@@ -709,7 +739,7 @@ All signals are aggregated into a single score by the `detectRisk()` function:
 | Signal | Risk Points |
 |---|---|
 | Duplicate image (pHash Hamming distance <= 12) | +35 |
-| Price < 15% of original | +25 |
+  | Price < 15% of original | Graduated +1 to +25 as the price falls below 15% |
 | Price > 150% of original | +10 |
 | High-value listing (>5000) from account < 30 days old | +15 |
 | Same description as another active listing (exact match — fast path) | +20 |
@@ -732,6 +762,8 @@ Risk level: < 25 -> low | 25-49 -> medium | >= 50 -> high
 ```
 
 The score and `factors[]` array are stored in `product.aiAnalysis.riskAssessment.riskScore` and `product.aiAnalysis.riskAssessment.factors` (schema in section 11) and displayed prominently in the product detail page.
+
+**Two independent gates — do not confuse them.** The **displayed** risk score/level above is the backend v1 (fused) score. The **listing status** transition is a *separate* gate inside `imageProcessor.js`: a listing is moved to `pendingReview` when the ML service's own 0-100 `fraudScore` is `>= 70` **or** its `statusRecommendation` is `'pendingReview'` (the v2 flag threshold, 0.95 calibrated). The two can therefore disagree — a listing can be `pendingReview` while its displayed `riskLevel` is still `low`, and vice versa. The backend score never writes listing status directly, and the ML score never overwrites the backend score (see §7.13 Part B.1 for the exact order).
 
 **Near-duplicate descriptions.** The exact-match row above is a fast path: if an identical description already exists on one of the seller's active listings the similarity scan is skipped entirely. Otherwise `detectRisk()` compares the description against the seller's other active listings (cap `DESC_DUP_SCAN_CAP`, default 100) and, if nothing matches, against other sellers' active listings in the same category (cap `OTHER_SELLER_DESC_SCAN_CAP`, default 200). Similarity is CLIP text embeddings via `POST /text-embed` (cosine, threshold 0.92) when the ML service is reachable, otherwise a pure-JS character 3-gram Jaccard score (threshold 0.85); text is lowercased and whitespace-collapsed first. This catches the "same listing, two words changed" evasion. **Honest labeling:** the fallback is a lexical overlap measure and the embedding path is a frozen general-purpose encoder — neither is a fraud-specific model, and a full rephrase evades both.
 
@@ -766,7 +798,7 @@ The last rule is an *interaction* signal: neither urgency nor a low price is sus
 
 #### Purpose
 
-The duplicate-detection subsystem exists to prevent image reuse and near-duplicate listings before they propagate. The design goal is **multi-layer defense**: a cheap perceptual-hash gate blocks exact/reposted copies early, a visual CNN fingerprint covers same-product appearance under viewpoint/lighting changes, text near-duplicate detection blocks the "two words changed" evasion, and all signals converge in the unified risk engine (`detectRisk()` in `backend/src/services/fraudDetection.js`). Listings photographed with several items together are first reduced to their primary detected item (§7.12) so bundle arrangements don't defeat appearance matching. Final outputs are stored in `product.aiAnalysis` (see §11). Final outputs are stored in `product.aiAnalysis` (see §11). When the worker detects a confident category mismatch, it also **widens the pHash probe to the suggested category's listings** (cross-category scan routing), so a repost filed under the wrong category cannot scope the duplicate check away.
+The duplicate-detection subsystem exists to prevent image reuse and near-duplicate listings before they propagate. The design goal is **multi-layer defense**: a cheap perceptual-hash gate blocks exact/reposted copies early, a visual CNN fingerprint covers same-product appearance under viewpoint/lighting changes, text near-duplicate detection blocks the "two words changed" evasion, and all signals converge in the unified risk engine (`detectRisk()` in `backend/src/services/fraudDetection.js`). Listings photographed with several items together are first reduced to their primary detected item (§7.12) so bundle arrangements don't defeat appearance matching. Final outputs are stored in `product.aiAnalysis` (see §11). When the worker detects a confident category mismatch, it also **widens the pHash probe to the suggested category's listings** (cross-category scan routing), so a repost filed under the wrong category cannot scope the duplicate check away.
 
 #### End-to-End Flow (ASCII)
 
@@ -925,7 +957,7 @@ risk but can never alone reach `high` or auto-flag a seller.
 
 | # | Algorithm | Domain | Purpose | Where Implemented | Key Parameters | Validation Status |
 |---|---|---|---|---|---|---|
-| 1 | **DCT Perceptual Hashing (pHash, 64-bit)** | Image | Exact / near-exact duplicate detection | `backend/src/services/imageHash.js` → `perceptualHashFromBuffer()` | Sharp `resize(32,32).grayscale().raw()` → 2D DCT (separable, precomputed `COS_TABLE`, 32×64 cosines) → top-left **8×8** block (64 lowest frequencies) → median of 64 coeffs → bit = `coeff >= median` → `BigInt('0b'+bits).toString(16).padStart(16)`. Hamming ≤ **12** (`HASH_SIMILARITY_THRESHOLD`) | **Validated** on a 24-image corpus: 0/276 false positives on different-product pairs (closest at distance **16**); 61/120 same-item variants within 12 (`backend/scripts/phash_validation_results.md`) |
+| 1 | **DCT Perceptual Hashing (pHash, 64-bit)** | Image | Exact / near-exact duplicate detection | `backend/src/services/imageHash.js` → `perceptualHashFromBuffer()` | Sharp `resize(32,32).grayscale().raw()` → 2D DCT (separable, precomputed `COS_TABLE` — one 32×32 cosine table reused for both axes, 1024 values instead of ~65 000 `Math.cos` calls per image) → top-left **8×8** block (64 lowest frequencies) → median of 64 coeffs → bit = `coeff >= median` → `BigInt('0b'+bits).toString(16).padStart(16)`. Hamming ≤ **12** (`HASH_SIMILARITY_THRESHOLD`) | **Validated** on a 24-image corpus: 0/276 false positives on different-product pairs (closest at distance **16**); 61/120 same-item variants within 12 (`backend/scripts/phash_validation_results.md`) |
 | 2 | **Hamming Distance** | Image | Similarity metric between two 64-bit pHashes | `imageHash.js` → `hammingDistance()`, `similarity()` | `BigInt('0x'+h1).toString(2)` ×64 → XOR popcount. Missing operand → **64** (never matches). Non-16-hex entry (sha256 fallback) → **null**, pair skipped. `similarity = max(0, 1 − d/64)` | Unit-tested (`backend/src/__tests__/fraud.test.js`); 0/276 FP in corpus |
 | 3 | **Multi-Hash Set Probing** (plain / mirror / r90 / r180 / r270 / vflip) | Image | Anti-evasion against flips & rotations | `imageHash.js` → `orientationHashesFromBuffer()`, `fraudDetection.js` → `collectHashSet()` | 6 hashes per image: plain, mirror (`sharp.flop()`), r90/r180/r270 (`sharp.rotate()`), vflip (`sharp.flip()`); full cross-product probe of upload set vs stored set. Persisted as `aiAnalysis.imageHashes` (plain+mirror), `rotationHashes`, `vflipHash` | **Validated**: set-based coverage **96/96** on exact transforms; plain-only mean Hamming 27.2–29.6 (1–4/24 caught) |
 | 4 | **MobileNet v2 (TF.js, ImageNet-pretrained)** | Image | Category classification + 1024-dim CNN embedding | `backend/src/services/imageClassifier.js` → `loadModel()`, `classifyImage()` | `mobilenet.load({version:2, alpha:1.0})`; Sharp → 224×224, `removeAlpha()`, raw 0-255 → `tf.tensor3d([224,224,3],'float32')` (model normalises internally — pre-dividing by 255 collapses input to near-black); `classify(tensor, 10)`; ~130 `IMAGENET_TO_CATEGORY` substring mappings summed per category; confidence capped **0.95**; `infer(tensor, true)` → **1024-dim** embedding | Unit/smoke-tested. **No accuracy benchmark** — ImageNet pretrained, never fine-tuned |
@@ -1101,8 +1133,9 @@ OUTPUT: recommendedPrice, minPrice/maxPrice (+/-15%), p25/p75,
 **1. DCT Perceptual Hashing (pHash)** — *Purpose:* turn an image into a 64-bit fingerprint that survives
 rescaling, recompression and mild edits, so byte-different but visually identical reposts collapse onto
 the same hash. *How:* Sharp decodes the buffer straight to a 32×32 raw grayscale plane; a separable 2D
-DCT runs over it (one horizontal pass into `temp`, one vertical pass into `output`) using a precomputed
-cosine table so ~65 000 `Math.cos` calls are not repeated per image; the top-left 8×8 block holds the
+DCT runs over it (one horizontal pass into `temp`, one vertical pass into `output`) using a
+precomputed cosine table — one 32×32 table reused for both axes, saving ~65 000 `Math.cos`
+calls per image; the top-left 8×8 block holds the
 64 lowest-frequency coefficients; the median of those 64 values becomes the threshold and each bit is
 `coeff >= median`; the 64 bits are packed via `BigInt` and rendered as 16 hex characters. Matches are
 decided by Hamming distance ≤ 12 in `detectRisk()` (§7.2, §7.11). *Limitation:* pHash is only robust to
@@ -1402,7 +1435,7 @@ CLIP captures multi-modal semantics — images and text exist in the same vector
 
 **File:** `ml-service/pipeline/fraud_v2.py`
 
-The v2 pipeline replaces the hand-weighted v1 rule engine with a **calibrated LightGBM binary classifier** trained on real fraud outcomes.
+The v2 pipeline replaces the hand-weighted v1 rule engine with a **calibrated LightGBM binary classifier** trained on labelled fraud outcomes (the artifacts in `models_saved/` were fitted on the synthetic generator's output — see `eval/RESULTS.md` — so the numbers there are behaviour-on-simulation, not production evidence; `training/train_fraud_v2.py` refuses to write synthetic-trained artifacts into a production model dir).
 
 #### Feature Engineering (14 features)
 
@@ -1412,22 +1445,27 @@ The v2 pipeline replaces the hand-weighted v1 rule engine with a **calibrated Li
 | `min_cross_phash_dist` | int | Min Hamming distance to any other seller's pHash |
 | `cross_phash_exact` | bool | Any cross-seller pHash distance <= threshold |
 | `max_same_seller_emb_sim` | float | Max CLIP similarity to same seller's own listings |
-| `same_seller_relist` | bool | Seller is relisting their own previously sold item |
-| `clip_image_text_sim` | float | Cosine similarity between listing image and title embeddings |
+| `same_seller_relist` | bool | Same-seller pHash near-match (Hamming ≤ 2 x `PHASH_EXACT_MAX_DIST`) — classified as a relist, not fraud |
+| `clip_image_text_sim` | float | CLIP image/title cosine rescaled to 0-1 as `(sim + 1) / 2` |
 | `price_zscore_category` | float | Z-score of price vs category median (clipped to +-10) |
 | `log_account_age_hours` | float | log1p(account age in hours) |
-| `listings_per_hour` | float | Listing rate (spam signal) |
+| `listings_per_hour` | float | log1p(listing rate) — burst-spam signal |
 | `aspect_ratio` | float | Image width / height ratio |
-| `is_stock_dimensions` | bool | Exactly 800x600 or 1200x900 (common stock photo dimensions) |
-| `has_suspicious_software` | bool | Title/desc contains suspicious terms |
+| `is_stock_dimensions` | bool | Exactly 1920x1080, 1200x800 or 1000x1000 (common stock photo dimensions; image EXIF/metadata width/height, defaulting to 800x600) |
+| `has_suspicious_software` | bool | Image `metadata.software` mentions photoshop / gimp / canva |
 | `vision_llm_flag_count` | int | Number of flags from Vision LLM analysis |
 | `vision_llm_confidence` | float | Vision LLM confidence score |
 
+> Feature-availability caveat: when LightGBM cannot be loaded the pipeline falls
+> back to a transparent rule-based score over the same features
+> (`_rule_fallback_score`), so the endpoint still answers.
+
 #### Vision LLM Integration
 
-The Vision LLM (`pipeline/vision_llm.py`) is only called when the LightGBM score falls in the **uncertainty band** (configurable range, e.g. 0.3-0.7). This design:
-- Reduces inference cost by ~70% (most listings are clearly legitimate or clearly fraudulent)
+The Vision LLM (`pipeline/vision_llm.py`) is only called when the LightGBM score falls in the tuned **uncertainty band** — calibrated probability inside `VISION_LLM_BAND` **[0.25, 0.65]** *and* within `VISION_LLM_MARGIN` = **0.15** of a decision threshold (env-tunable; the general shape is "skip the model when it is already confidently on one side of a threshold"). The call sends **one** image resized to ≤512px with `max_tokens=128`, `temperature=0.0` and a prompt that forces a JSON `{flags, confidence}` reply, and its ≤6 flags re-feed the classifier once. This design:
+- Reduces inference cost (~70% of listings are clearly legitimate or clearly fraudulent)
 - Provides extra discriminating signal only for genuinely ambiguous cases
+- Never blocks the request: no API key / download failure / timeout → flags stay 0
 
 #### Probability Calibration
 
@@ -1442,18 +1480,21 @@ POST /price-estimate
   Input: {
     listing: { condition, originalPrice, yearsUsed, category },
     embedding: [512 floats],    // optional CLIP embedding
-    comparables: [...],         // historical sold listings
-    kNeighbors: 5
+    comparables: [...],         // historical + currently listed items
+    kNeighbors: 5               // optional; service default KNN_NEIGHBORS = 12
   }
-  Output: { suggestedPrice, minPrice, maxPrice, confidence }
+  Output: { suggestedPrice, priceRange: {min, max, p25, p75}, confidence,
+            source, explanation, factors }
 ```
 
 When CLIP embeddings are provided, comparable selection is based on **semantic similarity in the embedding space** rather than just category matching. The model computes:
-- P25 (lower bound)
+- P25 (lower bound — exposed as the midpoint of the conformal-widened q10 and q50)
 - P50 (median / suggested price)
-- P75 (upper bound)
+- P75 (upper bound — midpoint of the widened q90 and q50)
 
-Using quantile regression against the k-nearest neighbors in the embedding space.
+Using **three LightGBM quantile regressors** (0.1 / 0.5 / 0.9, i.e. `PRICE_QUANTILES`) trained on **log price** so multiplicative errors become additive, scored against the k-nearest neighbours in the embedding space (HNSW with category pre-filter), and the interval is then widened by a **conformal width of 0.1303** (`PRICE_CONFORMAL_ALPHA = 0.20`, i.e. an 80% coverage target) before `exp()` maps back to price. Confidence is `0.6 x countFactor + 0.4 x spreadFactor`; below **0.35**, or with fewer than 3 neighbours, the endpoint returns only a wide range (`suggestedPrice: null`, `source: "ml-quantile-v2-wide"`) instead of a misleading point estimate.
+
+Comparables are cleaned with MAD-based outlier removal and sold prices are preferred (`_comp_price` prefers `soldPrice`/`lastSoldPrice`; `is_sold_present` is 1 once ≥3 sold comps exist). When the quantile models cannot be loaded, a heuristic baseline (`orig x condition x (1 − 0.15 x years)`, or the median of cleaned comparables) is served instead.
 
 ### 8.4 Shadow Mode & A/B Testing
 
@@ -1486,17 +1527,19 @@ Shadow mode enables safe model validation:
 
 A persistent **Hierarchical Navigable Small World (HNSW)** approximate nearest-neighbor index for fast embedding lookups at scale:
 
-- Stores CLIP embeddings indexed by product ID
-- Supports O(log n) k-NN queries (vs O(n) brute-force linear scan)
-- Persists to disk between service restarts
-- Used by the v2 fraud pipeline for fast cross-seller similarity lookups
+- Stores CLIP embeddings indexed by product ID, **one graph per category** plus one global graph (category pre-filter before the ANN search)
+- Supports O(log n) k-NN queries (vs O(n) brute-force linear scan), over-fetching `max(8k, k+20)` so seller/self exclusion still leaves k results
+- Built with `faiss.IndexHNSWFlat(512, H=32)` and searched with `efSearch = 64` (`ANN_EF_SEARCH`); vectors are L2-normalised first
+- Persists to `models_saved/ann_index.pkl` (vectors + item dicts) and is reloaded at startup instead of being rebuilt per request
+- Used by the v2 fraud pipeline for fast cross-seller similarity lookups and by price v2 for kNN comparable retrieval
+- Degrades to a numpy brute-force path when FAISS is not installed — the index is a retrieval accelerator, never the decision path
 
 ```
 GET /pipeline-stats
 -> {
     pipelineVersion: "v2",
-    embeddingCache: { hits, misses, size },
-    annIndex: { size, efConstruction, M },
+    embeddingCache: { hits, misses, size, image_cache_size, text_cache_size, max_size },
+    annIndex: { faiss_available, categories, global_items, ef_search },
     drift: { ... }   // prediction drift metrics over time
   }
 ```
@@ -1531,26 +1574,32 @@ Uses **BullMQ** (Redis-backed) for reliable async job processing. Jobs survive s
 Triggered when a new product is created. Full processing pipeline:
 
 1. Download images from Cloudinary URLs
-2. Compute pHash + mirrorHash for each image
-3. Run MobileNet category classification
+2. Compute the full pHash set per image (plain + mirror + r90/r180/r270 + vflip)
+3. Run MobileNet category classification (+ COCO-SSD multi-object crops, §7.12)
 4. Assess condition score (brightness / contrast / sharpness)
 5. Assess damage score (edge density analysis)
-6. Extract CNN feature vectors (stored per image)
-7. Call ML service for CLIP embedding (stored per image)
-8. Run identity verification if serial/IMEI provided
-9. Compute visual fingerprint similarity against candidates
-10. Run unified fraud risk scoring
+6. Extract CNN feature vectors (stored per image, background)
+7. Call ML service for CLIP embedding (stored on `product.embedding`)
+8. Blend the local price heuristic with the ML quantile estimate
+9. Compute visual fingerprint similarity against candidates (supporting-only)
+10. Run description exact/near-duplicate, scam-text, image-text, category-agreement,
+    cross-category and listing-velocity signals, then unified fraud risk scoring + v1/v2 fusion
 11. Update `product.aiAnalysis` in MongoDB
+
+> The list above is the conceptual summary (§7.1). The exact execution order — including the
+> parallel CV batch and the non-blocking `setImmediate` CNN/visual block — is traced step by
+> step in **§7.13 Part B.1**.
 
 ### `priceAnalyzer` Worker
 
-Triggered on product creation. Calculates fair market price:
+Triggered on product creation (and by a periodic stale-price sweep):
 
-1. Fetch comparable listings in same category
+1. Fetch comparable listings in same category (`status: 'sold'`, newest 20)
 2. Run local price recommendation (depreciation + condition + comparables)
 3. Call ML service for quantile price estimate (if ML service available)
-4. Blend both estimates
-5. Update `product.priceRecommendation` in MongoDB
+4. Blend both estimates with the same `ML_BLEND_WEIGHT` rule as the upload worker, so a later
+   local-only recompute never clobbers the ML-informed price
+5. Update `product.aiAnalysis.priceRecommendation` in MongoDB (adds a `refinedAt` timestamp)
 
 ### Queue Behavior
 
@@ -1596,14 +1645,19 @@ aiAnalysis: {
   hashesUnverified: Boolean,    // true when any stored hash came from a client echo (see §7.11)
 
   // Computer vision scores
-  conditionScore: Number,       // 0-100 (100 = like-new)
-  conditionLabel: String,       // 'like-new' | 'good' | 'fair' | 'poor'
-  damageScore: Number,          // 0-100 (0 = no damage detected)
+  conditionScore: Number,       // 0-100 (100 = like-new); 0/absent = NO visual evidence
+  conditionConfidence: Number,  // 0-1 — the condition estimate's own confidence (0.3 when unavailable)
+  damageScore: Number,          // 0-100 (0 = no damage detected; higher = more damage)
   damageLevel: String,          // 'low' | 'medium' | 'high'
+  damageConfidence: Number,     // 0-1 — 0.6 with evidence, 0.3 without
+  visualAnalysisAvailable: Boolean, // false = insufficient evidence (UI must say so, never show 0)
+  imageTextSimilarity: Number,  // CLIP image<->title cosine; null = not evaluated (ML down / no embeddings)
 
-  // Classification
-  suggestedCategory: String,    // MobileNet-suggested category name
-  categoryConfidence: Number,   // 0-1 confidence
+  // Classification (as written by imageProcessor.js / Product schema)
+  classification: {
+    predictedCategory: String, // MobileNet-suggested category name
+    confidence: Number,        // 0-1
+  },
 
   // Multi-object detections, cover image only (see §7.12)
   detectedObjects: [{          // one entry per COCO-SSD box (score >= 0.5, NMS IoU 0.6)
@@ -1633,7 +1687,8 @@ aiAnalysis: {
   },
 
   // Timestamps
-  processedAt: Date,
+  lastAnalyzedAt: Date,        // when the image pipeline last wrote this subdocument
+  processedAt: Date,           // legacy field retained for older documents
 }
 ```
 
@@ -1734,9 +1789,11 @@ IDENTIFIER_HASH_SALT=change-me-to-a-long-random-string-min-32-chars
 CLIP_MODEL_NAME=ViT-B-32
 CLIP_PRETRAINED=laion2b_s34b_b79k
 ML_PIPELINE_V2=0          # 0=legacy | shadow | 1=v2
-PHASH_DISTANCE_THRESHOLD=8  # v2 pipeline fast-path scan threshold — different domain from backend duplicate gate
-FRAUD_HIGH_THRESHOLD=0.60
+PHASH_DISTANCE_THRESHOLD=8  # legacy v1 fraud detector only (services/fraud_detector.py) — different domain from the backend duplicate gate
+PHASH_EXACT_MAX_DIST=4     # v2 pipeline fast-path pHash distance (cross-seller duplicate rule, fraud_v2.py)
+FRAUD_HIGH_THRESHOLD=0.60  # v2 env defaults — models_saved/fraud_v2_thresholds.json (0.95/0.475) overrides them
 FRAUD_MEDIUM_THRESHOLD=0.30
+VISION_LLM_BAND_LOW=0.25   # uncertainty band for the vision LLM (high = 0.65, margin = 0.15)
 ```
 
 ---
