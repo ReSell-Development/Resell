@@ -493,55 +493,26 @@ const { cosineSimilarity } = require('../services/textSimilarity');
           // Best-effort: failures here are warnings, never job failures.
           try {
             const { assessVisualSimilarity } = require('../services/fraudDetection');
+            const {
+              assessRepeatRelistPattern,
+              recordSupportingRiskSignal,
+            } = require('../services/fraudDetection');
             const visual = await assessVisualSimilarity({ productId });
             if (visual.available && visual.signal) {
-              // Atomic aggregation-pipeline update — appends the visual
-              // factor, increments the score and re-derives the level in a
-              // single server-side operation (no read-modify-write race).
-              await Product.updateOne(
-                { _id: productId },
-                [
-                  {
-                    $set: {
-                      'aiAnalysis.riskAssessment.factors': {
-                        $concatArrays: [
-                          { $ifNull: ['$aiAnalysis.riskAssessment.factors', []] },
-                          [visual.factor],
-                        ],
-                      },
-                      'aiAnalysis.riskAssessment.riskScore': {
-                        $min: [
-                          100,
-                          {
-                            $add: [
-                              { $ifNull: ['$aiAnalysis.riskAssessment.riskScore', 0] },
-                              visual.weight || 0,
-                            ],
-                          },
-                        ],
-                      },
-                    },
-                  },
-                  {
-                    $set: {
-                      'aiAnalysis.riskAssessment.riskLevel': {
-                        $cond: [
-                          { $gte: ['$aiAnalysis.riskAssessment.riskScore', 50] },
-                          'high',
-                          {
-                            $cond: [
-                              { $gte: ['$aiAnalysis.riskAssessment.riskScore', 25] },
-                              'medium',
-                              'low',
-                            ],
-                          },
-                        ],
-                      },
-                      'aiAnalysis.riskAssessment.assessedAt': new Date(),
-                    },
-                  },
-                ]
-              );
+              // Persist through the shared atomic helper so the score, raw
+              // factor, and owner-facing generalized category stay in sync.
+              // AIAnalysisPanel renders riskFactorCategories when present;
+              // omitting it made this supporting signal invisible in the UI.
+              await recordSupportingRiskSignal({
+                productId,
+                ...visual,
+                category: 'possible_duplicate_image',
+              });
+            }
+
+            const repeatRelist = await assessRepeatRelistPattern({ productId });
+            if (repeatRelist) {
+              await recordSupportingRiskSignal({ productId, ...repeatRelist });
             }
           } catch (e) {
             console.warn(`[Worker] Visual fingerprint comparison failed for ${productId}:`, e.message);
