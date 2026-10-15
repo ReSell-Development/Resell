@@ -210,7 +210,9 @@ const productSchema = new mongoose.Schema(
         refinementAttempts: { type: Number, default: 0 },
         source: {
           type: String,
-          enum: ['ml-model', 'heuristic', 'ml-service', 'insufficient_data'],
+          // `hybrid` is emitted when the worker blends the local heuristic
+          // with the ML kNN estimate (ML_BLEND_WEIGHT, default 0.7).
+          enum: ['ml-model', 'heuristic', 'ml-service', 'hybrid', 'insufficient_data'],
           default: 'heuristic',
         },
       },
