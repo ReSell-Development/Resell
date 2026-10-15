@@ -37,4 +37,9 @@ const isBlacklisted = (jti) => {
   return false;
 };
 
-module.exports = { blacklistToken, isBlacklisted };
+// Test-only: drop all in-memory state to simulate a fresh process (restart).
+// A real restart wipes this Set; durable revocation lives in MongoDB
+// (services/refreshTokenService.js), not here.
+const resetBlacklist = () => blacklistedJIDs.clear();
+
+module.exports = { blacklistToken, isBlacklisted, resetBlacklist };

@@ -102,14 +102,22 @@ api.interceptors.response.use(
         await attemptRefresh();
         // Retry the original request — new access_token cookie is now set.
         return api(originalRequest);
-      } catch {
-        // Refresh failed — if we've now hit the limit, force logout.
-        const currentRetries = parseInt(
-          sessionStorage.getItem(RETRY_COUNT_KEY) || '0',
-          10
-        );
-        if (currentRetries >= MAX_REFRESH_RETRIES) {
-          forceLogout();
+      } catch (refreshErr) {
+        // Only an explicit auth rejection (401/403) means the session is
+        // dead. A network error / 5xx means the backend is momentarily
+        // unavailable (e.g. mid-restart while `npm run dev` reloads) — the
+        // httpOnly cookies are still valid, so keep the session and let a
+        // later request (or a page load) retry instead of logging the user out.
+        const refreshStatus = refreshErr?.response?.status;
+        if (refreshStatus === 401 || refreshStatus === 403) {
+          // Refresh failed — if we've now hit the limit, force logout.
+          const currentRetries = parseInt(
+            sessionStorage.getItem(RETRY_COUNT_KEY) || '0',
+            10
+          );
+          if (currentRetries >= MAX_REFRESH_RETRIES) {
+            forceLogout();
+          }
         }
         return Promise.reject(err);
       }

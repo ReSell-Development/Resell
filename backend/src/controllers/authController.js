@@ -1,7 +1,23 @@
 const User = require('../models/User');
+const jwt = require('jsonwebtoken');
 const { generateToken, generateRefreshToken, setTokenCookies, clearTokenCookies, verifyToken } = require('../utils/jwt');
 const { blacklistToken } = require('../utils/tokenBlacklist');
+const {
+  persistRefreshToken,
+  findRefreshTokenRecord,
+  isRefreshTokenRecordUsable,
+  rotateRefreshToken,
+  revokeRefreshToken,
+} = require('../services/refreshTokenService');
 const AppError = require('../utils/AppError');
+
+// Expiry (ms epoch) of a freshly signed refresh token, mirrored into its DB
+// row so the record and the JWT agree on lifetime (default 7d).
+const refreshTokenExpiryMs = (token) => {
+  const decoded = jwt.decode(token);
+  if (decoded && Number.isFinite(decoded.exp)) return decoded.exp * 1000;
+  return Date.now() + 7 * 24 * 60 * 60 * 1000;
+};
 
 const register = async (req, res, next) => {
   try {
@@ -26,6 +42,14 @@ const register = async (req, res, next) => {
 
     const token = generateToken({ id: user._id, role: user.role });
     const refreshToken = generateRefreshToken({ id: user._id, role: user.role });
+
+    // DB-persist the refresh token so logout/rotation survive restarts.
+    // Fail closed: a token with no record can never be refreshed.
+    await persistRefreshToken({
+      token: refreshToken,
+      userId: user._id,
+      expiresAt: refreshTokenExpiryMs(refreshToken),
+    });
 
     setTokenCookies(res, token, refreshToken);
 
@@ -66,6 +90,13 @@ const login = async (req, res, next) => {
 
     const token = generateToken({ id: user._id, role: user.role });
     const refreshToken = generateRefreshToken({ id: user._id, role: user.role });
+
+    // DB-persist the refresh token so logout/rotation survive restarts.
+    await persistRefreshToken({
+      token: refreshToken,
+      userId: user._id,
+      expiresAt: refreshTokenExpiryMs(refreshToken),
+    });
 
     setTokenCookies(res, token, refreshToken);
 
@@ -136,10 +167,14 @@ const logout = async (req, res) => {
     } catch { /* token may already be expired — still blacklist by jti if possible */ }
   }
   if (refreshToken) {
+    // Durable revocation: mark the DB row revoked so the refresh endpoint
+    // rejects this token even after a backend restart. The in-memory JWT
+    // blacklist (used above for the access token) is wiped on reboot and is
+    // NOT consulted by /refresh — the persisted RefreshToken record is the
+    // kill switch that survives restarts.
     try {
-      const decoded = verifyToken(refreshToken);
-      blacklistToken(decoded.jti, decoded.exp * 1000);
-    } catch { /* ignore */ }
+      await revokeRefreshToken(refreshToken);
+    } catch { /* non-fatal — cookies are cleared regardless */ }
   }
 
   clearTokenCookies(res);
@@ -184,8 +219,30 @@ const refreshAccessToken = async (req, res, next) => {
       });
     }
 
+    // The presented refresh token must have a live DB record: unknown,
+    // revoked (logout / already rotated), or expired rows are rejected.
+    // This is what makes revocation survive backend restarts.
+    const record = await findRefreshTokenRecord(refreshToken);
+    if (!isRefreshTokenRecordUsable(record)) {
+      clearTokenCookies(res);
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid or expired refresh token',
+        code: 'REFRESH_TOKEN_INVALID',
+      });
+    }
+
     const newAccessToken = generateToken({ id: user._id, role: user.role });
     const newRefreshToken = generateRefreshToken({ id: user._id, role: user.role });
+
+    // Single-use rotation: the presented token is revoked and linked to its
+    // successor, so a replayed (stolen or double-used) refresh token fails.
+    await rotateRefreshToken({
+      oldToken: refreshToken,
+      newToken: newRefreshToken,
+      userId: user._id,
+      newExpiresAt: refreshTokenExpiryMs(newRefreshToken),
+    });
 
     setTokenCookies(res, newAccessToken, newRefreshToken);
 

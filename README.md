@@ -1181,7 +1181,7 @@ aiAnalysis: {
 
 | Measure | Implementation |
 |---|---|
-| **Authentication** | JWT access tokens (15 min expiry) + refresh tokens (7 days) in httpOnly cookies |
+| **Authentication** | JWT access tokens (15 min expiry) + refresh tokens (7 days) in httpOnly cookies. Refresh tokens are persisted in MongoDB (hashed, with expiry/revocation + single-use rotation) so sessions and logout/rotation survive backend restarts; `JWT_SECRET` is required and kept stable across boots. |
 | **Password Storage** | bcrypt with 12 salt rounds |
 | **Security Headers** | Helmet.js with strict Content Security Policy |
 | **NoSQL Injection** | express-mongo-sanitize strips `$` and `.` from request data |

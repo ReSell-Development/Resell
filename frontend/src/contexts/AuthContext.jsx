@@ -19,8 +19,19 @@ export const AuthProvider = ({ children }) => {
       if (isCurrent()) setUser(data.user);
     } catch (err) {
       if (!isCurrent()) return;
-      console.error('[Auth] Load user failed:', err);
-      setUser(null);
+      const status = err?.response?.status;
+      if (status === 401 || status === 403) {
+        // The server explicitly rejected the session (expired + unrefreshable,
+        // revoked, etc.) — treat as logged out.
+        console.error('[Auth] Load user failed:', err);
+        setUser(null);
+      } else {
+        // Network error or 5xx (e.g. backend momentarily down mid-restart):
+        // do NOT log the user out. A transient outage must not destroy the
+        // session — the httpOnly cookies are still valid and a later render
+        // will authenticate again once the backend is reachable.
+        console.error('[Auth] Load user deferred (backend unreachable):', err?.message || err);
+      }
     } finally {
       if (isCurrent()) setLoading(false);
     }
