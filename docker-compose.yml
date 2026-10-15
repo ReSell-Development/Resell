@@ -1,0 +1,169 @@
+services:
+  # MongoDB Database
+  mongodb:
+    image: mongo:6.0
+    container_name: resell-mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    environment:
+      - MONGO_INITDB_DATABASE=resell
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - resell-network
+
+  # Redis for BullMQ
+  redis:
+    image: redis:7-alpine
+    container_name: resell-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - resell-network
+
+  # ML Service (FastAPI CLIP + Fraud + Price)
+  ml-service:
+    build:
+      context: ./ml-service
+      dockerfile: Dockerfile
+    container_name: resell-ml-service
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - CLIP_MODEL_NAME=ViT-B/32
+      - CLIP_PRETRAINED=openai
+      - FRAUD_HIGH_THRESHOLD=0.60
+      - FRAUD_MEDIUM_THRESHOLD=0.30
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - resell-network
+
+  # Backend API (Node.js)
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: resell-backend:latest
+    container_name: resell-backend
+    ports:
+      - "5000:5000"
+    environment:
+      - NODE_ENV=production
+      - PORT=5000
+      - MONGODB_URI=mongodb://mongodb:27017/resell
+      - REDIS_URL=redis://redis:6379
+      - ML_SERVICE_URL=http://ml-service:8000
+      - CLIENT_URL=http://localhost:3000
+      # Cloudinary (set in .env or environment)
+      - CLOUDINARY_CLOUD_NAME=${CLOUDINARY_CLOUD_NAME}
+      - CLOUDINARY_API_KEY=${CLOUDINARY_API_KEY}
+      - CLOUDINARY_API_SECRET=${CLOUDINARY_API_SECRET}
+      # Stripe
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
+      - STRIPE_PUBLISHABLE_KEY=${STRIPE_PUBLISHABLE_KEY}
+      # Auth
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_ACCESS_EXPIRE=${JWT_ACCESS_EXPIRE:-15m}
+      - JWT_REFRESH_EXPIRE=${JWT_REFRESH_EXPIRE:-7d}
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ml-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - resell-network
+
+  # AI / image-analysis worker — processes the "image-processing" BullMQ queue
+  # (perceptual hashing, CLIP feature extraction via ML service, fraud scoring, price estimation)
+  worker-image:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: resell-backend:latest
+    container_name: resell-worker-image
+    command: ["node", "src/workers/imageProcessor.js"]
+    environment:
+      - NODE_ENV=production
+      - MONGODB_URI=mongodb://mongodb:27017/resell
+      - REDIS_URL=redis://redis:6379
+      - ML_SERVICE_URL=http://ml-service:8000
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ml-service:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      disable: true
+    networks:
+      - resell-network
+
+  # Price / duplicate-processing worker
+  worker-price:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: resell-backend:latest
+    container_name: resell-worker-price
+    command: ["node", "src/workers/priceAnalyzer.js"]
+    environment:
+      - NODE_ENV=production
+      - MONGODB_URI=mongodb://mongodb:27017/resell
+      - REDIS_URL=redis://redis:6379
+      - ML_SERVICE_URL=http://ml-service:8000
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      disable: true
+    networks:
+      - resell-network
+
+volumes:
+  mongo-data:
+    driver: local
+  redis-data:
+    driver: local
+
+networks:
+  resell-network:
+    driver: bridge
