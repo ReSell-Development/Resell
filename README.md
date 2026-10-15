@@ -25,6 +25,7 @@
     - [7.10 Scam-Text Pattern Analyzer](#710-scam-text-pattern-analyzer)
     - [7.11 Duplicate Detection — Complete Flow](#711-duplicate-detection--complete-flow)
     - [7.12 Multi-Object Image Handling](#712-multi-object-image-handling)
+   - [7.13 ML Algorithms & Pipeline Reference](#713-ml-algorithms--pipeline-reference)
 8. [ML Microservice (Python / FastAPI)](#8-ml-microservice-python--fastapi)
    - [8.1 CLIP Embeddings](#81-clip-embeddings)
    - [8.2 LightGBM Fraud Pipeline v2](#82-lightgbm-fraud-pipeline-v2)
@@ -908,6 +909,467 @@ aiAnalysis.detectedObjects: [{ bbox, label, score, cropClassification, cropConfi
 - **Bundle note.** `>= 3` objects store an informational `aiAnalysis.bundleNote` ("Bundle photo: N distinct items detected …"). It is **never a risk signal** and is displayed to admins/owners only (stripped for other viewers in `GET /product/:id`).
 
 **Honest scope note.** COCO-SSD covers the 80 common COCO classes (bottles, cups, phones, chairs, …). Exotic or highly stylised items it was never trained on (collectibles, niche hardware, unusual angles) yield no boxes and silently take the whole-image fallback — the listing is never penalised for the detector's blind spots. Detection runs on the cover image only; per-image crop detail is recomputed on demand, never persisted per image.
+
+### 7.13 ML Algorithms & Pipeline Reference
+
+This section is a **study/exam reference**: every algorithm in the system, in one place, with the exact
+implementation detail (libraries, tensor shapes, thresholds, formulas) taken from the code. Parts A–C
+summarise and cross-reference the deep dives — **[§7.1](#71-image-fraud-detection-pipeline)** …
+**[§7.12](#712-multi-object-image-handling)** and **[§8.1](#81-clip-embeddings)** …
+**[§8.5](#85-ann-index-hnsw)** hold the full treatment.
+
+#### PART A — Algorithm Master Table
+
+Every number below is read from the source, not estimated. "Supporting-only" means the signal can raise
+risk but can never alone reach `high` or auto-flag a seller.
+
+| # | Algorithm | Domain | Purpose | Where Implemented | Key Parameters | Validation Status |
+|---|---|---|---|---|---|---|
+| 1 | **DCT Perceptual Hashing (pHash, 64-bit)** | Image | Exact / near-exact duplicate detection | `backend/src/services/imageHash.js` → `perceptualHashFromBuffer()` | Sharp `resize(32,32).grayscale().raw()` → 2D DCT (separable, precomputed `COS_TABLE`, 32×64 cosines) → top-left **8×8** block (64 lowest frequencies) → median of 64 coeffs → bit = `coeff >= median` → `BigInt('0b'+bits).toString(16).padStart(16)`. Hamming ≤ **12** (`HASH_SIMILARITY_THRESHOLD`) | **Validated** on a 24-image corpus: 0/276 false positives on different-product pairs (closest at distance **16**); 61/120 same-item variants within 12 (`backend/scripts/phash_validation_results.md`) |
+| 2 | **Hamming Distance** | Image | Similarity metric between two 64-bit pHashes | `imageHash.js` → `hammingDistance()`, `similarity()` | `BigInt('0x'+h1).toString(2)` ×64 → XOR popcount. Missing operand → **64** (never matches). Non-16-hex entry (sha256 fallback) → **null**, pair skipped. `similarity = max(0, 1 − d/64)` | Unit-tested (`backend/src/__tests__/fraud.test.js`); 0/276 FP in corpus |
+| 3 | **Multi-Hash Set Probing** (plain / mirror / r90 / r180 / r270 / vflip) | Image | Anti-evasion against flips & rotations | `imageHash.js` → `orientationHashesFromBuffer()`, `fraudDetection.js` → `collectHashSet()` | 6 hashes per image: plain, mirror (`sharp.flop()`), r90/r180/r270 (`sharp.rotate()`), vflip (`sharp.flip()`); full cross-product probe of upload set vs stored set. Persisted as `aiAnalysis.imageHashes` (plain+mirror), `rotationHashes`, `vflipHash` | **Validated**: set-based coverage **96/96** on exact transforms; plain-only mean Hamming 27.2–29.6 (1–4/24 caught) |
+| 4 | **MobileNet v2 (TF.js, ImageNet-pretrained)** | Image | Category classification + 1024-dim CNN embedding | `backend/src/services/imageClassifier.js` → `loadModel()`, `classifyImage()` | `mobilenet.load({version:2, alpha:1.0})`; Sharp → 224×224, `removeAlpha()`, raw 0-255 → `tf.tensor3d([224,224,3],'float32')` (model normalises internally — pre-dividing by 255 collapses input to near-black); `classify(tensor, 10)`; ~130 `IMAGENET_TO_CATEGORY` substring mappings summed per category; confidence capped **0.95**; `infer(tensor, true)` → **1024-dim** embedding | Unit/smoke-tested. **No accuracy benchmark** — ImageNet pretrained, never fine-tuned |
+| 5 | **Cosine Similarity on CNN embeddings** | Image | Same-product appearance fingerprinting | `backend/src/services/productFingerprint.js` → `cosineSimilarity()`, `compareProductFingerprints()` | ≥ **0.90** → `VISUAL_PRODUCT_SIMILARITY` weight **+10**; ≥ **0.97** → weight **+20**. Crosswise (every image of A vs every image of B), best match per A-image, `aggregateSimilarity` = mean of best matches. Clamped to [0,1]. Candidate cap `VISUAL_SCAN_CAP`=**200** | **Supporting-only by design**; no accuracy benchmark |
+| 6 | **Aggregate Fingerprinting** | Image | One representative vector per listing | `productFingerprint.js` → `buildProductFingerprint()` | Unit-normalised **mean** of per-image `images[].cnnFeatures` (1024-dim); primary crop embedding (`aiAnalysis.detectedObjects[primaryObjectIndex]`) appended as an extra crosswise comparison vector (never mixed into the mean); no CNN features + no crop → `{available:false, reason:'cnn_features_unavailable'}` | Supporting-only; unit-tested |
+| 7 | **COCO-SSD Object Detection (TF.js)** | Image | Multi-object localisation, per-object crops, primary product selection | `backend/src/services/imageClassifier.js` → `loadDetector()`, `detectObjects()`, `analyzeDetectedObjects()` | `cocoSsd.load({base:'mobilenet_v2'})`; long edge capped at `OBJECT_DETECTION_MAX_DIM`=**800** for detection, boxes scaled back to original pixels; boxes with `score >= OBJECT_DETECTION_MIN_SCORE`=**0.5**; greedy NMS `IoU > OBJECT_DETECTION_IOU_THRESHOLD`=**0.6** keeps highest score; ≤ `OBJECT_DETECTION_MAX_OBJECTS`=**8** crops; crop padding **0.10** per side; per crop: `classifyImage()` + `embedBuffer()` (1024-dim) | Best-effort; no COCO mAP benchmark; **80 COCO classes only** |
+| 8 | **CLIP ViT-B/32 (OpenCLIP)** | Image + Text | 512-dim joint image/text embeddings | `ml-service/models/clip_model.py` (+ `pipeline/embedding_cache.py`) | `ViT-B-32` / `laion2b_s34b_b79k` via `open_clip`, CUDA if available; `encode_image`/`encode_text` → **L2-normalised 512-d** (cosine = dot). Uses: image↔title mismatch cosine **< 0.20** (`IMAGE_TEXT_MISMATCH`, +15); cross-category repost cosine **≥ 0.93**, top-K **50** (`CROSS_CATEGORY_IMAGE_REPOST`, +20). LRU cache `EMBED_CACHE_SIZE`=4096 keyed by sha256 of URL/text | Thresholds tuned on adversarial set; **not validated on real traffic** |
+| 9 | **CLIP Text Embeddings** | Text | Near-duplicate description detection (preferred path) | `backend/src/services/mlClient.js` → `getTextEmbedding()`, `fraudDetection.js` → `findBestTextMatch()` | `POST /text-embed` per candidate (5s timeout) → cosine ≥ **0.92** (`TEXT_SIMILARITY_ML_THRESHOLD`); same-seller **+20**, other-seller same-category **+15**; caps `DESC_DUP_SCAN_CAP`=**100** / `OTHER_SELLER_DESC_SCAN_CAP`=**200**; ML health cached `DESC_DUP_ML_HEALTH_TTL_MS`=30s | Unit-tested; frozen general-purpose encoder, **not a fraud model** |
+| 10 | **Character 3-gram Jaccard Similarity** | Text | ML-down fallback for text similarity | `backend/src/services/textSimilarity.js` → `charNgramJaccard()` | `n=3` overlapping grams over `normalizeText()` (lowercase + whitespace collapsed); both empty → 1, one empty → 0; threshold **≥ 0.85** (`TEXT_SIMILARITY_NGRAM_THRESHOLD`); strings shorter than n yield the whole string as one gram | Unit-tested; lexical overlap only |
+| 11 | **LightGBM (gradient-boosted trees)** | Fraud | v2 fraud classifier on 14 engineered features | `ml-service/pipeline/fraud_v2.py` → `CalibratedFraudClassifier` | `lgb.Booster(model_file=models_saved/fraud_v2.txt)`; input = 14 features in fixed `FEATURE_ORDER`; trained `objective=binary`, `learning_rate=0.05`, `num_leaves=31`, `min_child_samples=20`, `feature_fraction=0.9`, `bagging_fraction=0.8`/`bagging_freq=1`, **300 boosting rounds**, `scale_pos_weight = n_neg/n_pos`; runtime thresholds flag **0.95** / review **0.475** (`models_saved/fraud_v2_thresholds.json` overrides env defaults 0.60/0.30) | **Synthetic eval only**: AUC-ROC **0.888**, recall **0.56** @ flag 0.95 (`ml-service/eval/RESULTS.md` — "DATA IS SYNTHETIC") |
+| 12 | **Isotonic Regression (sigmoid fallback)** | Fraud | Probability calibration of the raw LightGBM score | `ml-service/training/train_fraud_v2.py` (fit) + `fraud_v2.CalibratedFraudClassifier.predict_proba()` (use) | `IsotonicRegression(out_of_bounds="clip", y_min=0, y_max=1).fit(raw_holdout, y)`; fallback **Platt sigmoid** = `LogisticRegression` on the raw score; calibrated value `np.clip(..., 0, 1)`; artifact `models_saved/fraud_v2_calibrator.pkl` | Fit on a 400-sample calibration split (synthetic train of 1200); **not validated on real outcomes** |
+| 13 | **Vision LLM (uncertainty-band gating)** | Fraud | Cost-efficient ambiguous-case image analysis | `ml-service/pipeline/vision_llm.py` → `analyze_listing_image()`, `in_uncertainty_band()` | NVIDIA NIM (OpenAI-compatible), `microsoft/phi-3-vision-128k-instruct`; called only when the calibrated probability is inside `VISION_LLM_BAND` **[0.25, 0.65]** **and** within `VISION_LLM_MARGIN`=**0.15** of a threshold; one image resized to ≤ **512**px, JPEG q85; `max_tokens=128`, `temperature=0.0`; ≤ **6** flags (`stock_photo`/`watermark`/`screenshot`/`mismatch`/`edited`/`low_quality`); features `vision_llm_flag_count` / `vision_llm_confidence` re-feed the model once | **Never exercised** — no API key/no images in the synthetic eval, so both features are always 0 |
+| 14 | **kNN + Quantile Regression (on CLIP embedding space)** | Price | Price estimate + P25/P50/P75-style interval | `ml-service/pipeline/price_v2.py` → `evaluate_price_v2()`, `QuantilePriceModelV2` | 3 LightGBM quantile boosters `price_v2_p10/p50/p90.txt` on **log price** (`PRICE_QUANTILES = 0.1/0.5/0.9` — *not* 0.25/0.75; P25/P75 are exposed as the **midpoints** `(q10+q50)/2`, `(q90+q50)/2`); `k = KNN_NEIGHBORS`=**12** service default, **5** when the request supplies `kNeighbors` (the Node client sends 5); conformal widening **±0.1303** (`PRICE_CONFORMAL_ALPHA=0.20`, i.e. 80% coverage); features `log_original_price`, `years_used`, `condition_weight`, `is_sold_present`, `knn_median_log_price`, `knn_spread_log_price`, `knn_count`, `category_median_log_price`; `confidence = 0.6·countFactor + 0.4·spreadFactor`; `< 0.35` or `knn_count < 3` → wide range, `suggestedPrice = null` | **Synthetic eval**: MAE **$39.19** / MAPE **16.87%** vs v1 $123.76 / 68.48% (200 synthetic sold listings) |
+| 15 | **HNSW (via FAISS `IndexHNSWFlat`)** | Retrieval | O(log n) approximate nearest-neighbour over 512-d embeddings | `ml-service/pipeline/ann_index.py` → `CategoryANNIndex` | `faiss.IndexHNSWFlat(512, H=32)`, `hnsw.efSearch = ANN_EF_SEARCH`=**64**; one graph per category + a global store; vectors L2-normalised; `overfetch = max(k*8, k+20)` then seller/id exclusion; pickle-persisted to `models_saved/ann_index.pkl`; **numpy dot-product fallback** when FAISS is missing | No recall benchmark; *implementation is FAISS, not hnswlib* (see §3) |
+| 16 | **Exponential Depreciation Model** | Price | Base price from MSRP | `backend/src/services/priceRecommendation.js` → `calculateRecommendedPrice()` | `MSRP × (1 − rate)^years × brandMult × conditionMult`; annual `ANNUAL_DEPRECIATION`: Electronics 0.18, Mobile Phones 0.22, Computers 0.16, Fashion 0.30, Home & Garden 0.10, Sports 0.15, Books 0.25, Toys 0.20, Beauty 0.12, Automotive 0.10, Other 0.15; `BRAND_PREMIUM` apple 1.10, nike 1.05, adidas 1.04, sony/canon 1.03, samsung 1.02, else 1.0; `CONDITION_FACTOR` new 0.95 / like-new 0.82 / good 0.65 / fair 0.45 / poor 0.25, unknown → 0.6 | Hand-tuned constants; **no market-data validation** |
+| 17 | **IQR Outlier Removal (Tukey's fence)** | Price | Comparable-price cleaning (local engine) | `backend/src/services/priceRecommendation.js` → `trimIQR()` | Needs ≥ **4** values; `q1 = s[floor(0.25n)]`, `q3 = s[floor(0.75n)]`; keep `q1 − 1.5·IQR ≤ v ≤ q3 + 1.5·IQR`; ML path instead uses **MAD**: `median ± PRICE_OUTLIER_MAD(3.0) × 1.4826 × mad` (`price_v2.clean_outliers`) | Not benchmarked; two different cleaners in two layers (documented) |
+| 18 | **Z-Score (price vs category median)** | Fraud + Price | Price anomaly detection | `ml-service/pipeline/fraud_v2.py` → `_metadata_features()` | `z = (price − cat_median) / cat_std`; `cat_median` from `categoryMedianPrice` or `np.median(comparables)`; `cat_std = np.std(comparables)` or **0.35 × median** fallback; `np.clip(z, −10, 10)`; reason bands **z < −2.5** (too low) and **z > 3.0** (too high) | Synthetic only |
+| 19 | **Sobel-like Edge Density Analysis** | CV | Damage heuristic | `backend/src/services/computerVision.js` → `detectDamage()` | **Heuristic, not a learned model.** 64×64 grayscale thumbnail; interior 62×62 pixels; `abs(gx) + abs(gy) > 60`; `edgeRatio = edges / 3844`; `> 0.45` → **+55**, `> 0.35` → **+35**, `> 0.20` → **+20**, `< 0.08` → smooth (no penalty); max reachable **55**; levels ≥ 50 high / ≥ 25 medium | Hand-tuned; **no damage benchmark** |
+| 20 | **Pixel Statistics (brightness / contrast / sharpness)** | CV | Condition scoring | `computerVision.js` → `analyzeImageQuality()`, `assessCondition()` | `sharp.stats()` per-channel: brightness = mean of channel means; contrast = mean of `min(stdev,100)`; `sharpness = 0.8×contrast + 0.2×brightness`. Penalties: dark (<60) −15, overexposed (>220) −10, low contrast (<20) −10, blur (sharpness <30) −8; clamp **[30,100]**; labels ≥90 like-new / ≥75 good / ≥60 fair / else poor; unavailable → `score: null, available:false` | Hand-tuned; measures the **photo**, not the item |
+| 21 | **Lexical Pattern Matching (regex)** | Text | Scam-text signals | `backend/src/services/textScamAnalyzer.js` → `analyzeTextScam()` | **Heuristic, not a learned model.** Contact info (email / WhatsApp / `+?91[.\s-]?[6-9]\d{9}` / generic `\b\d{10}\b`) **+10**; urgency clichés ≥4 **+15**, ≥2 **+10**; `EXCESSIVE_CAPS` (len>30, >50% uppercase) **+5**; `EXCESSIVE_PUNCTUATION` (>5 `!`) **+5**; `LOWBALL_URGENCY_COMBO` (`\burgent\b` **and** price < **0.40 × originalPrice**) **+15**; total capped at **+25** (`MAX_CONTRIBUTION`) | No labelled scam corpus; explicitly documented as trivially evadable |
+| 22 | **Weighted Additive Signal Aggregation** | Fraud | v1 risk engine | `backend/src/services/fraudDetection.js` → `detectRisk()` | Fixed hand-authored weights (+5 … +100) summed then `clamp(score, 0, 100)`; bands **≥ 50 high** / **≥ 25 medium** / else low (see the full weight table in §7.9) | Unit-tested; weights hand-authored, not learned |
+| 23 | **Max-Fusion Ensemble Policy** | Fraud | Combine v1 additive score with v2 probability | `fraudDetection.js` → `fuseFraudScores()` | both → `max(v1, round(v2 × 100))`, `fusionMode:'v1+v2-max'`; v1 only → `'v1'`; v2 only → `'v2'`. Conservative: either engine escalates, neither downgrades | Unit-tested (§8.4) |
+| 24 | **Logarithmic Scaling `log10(n+1)`** | Trust | Anti-gaming sales component of the trust score | `backend/src/services/trustScore.js` → `calculateTrustScore()` | `salesScore = clamp(log10(salesCount+1) × 10, 0, 20)`; repeat-buyer concentration over the **20** most recent sales: `ratio = 1 − uniqueBuyers/20`; `> 0.6` → `salesScore = min(salesScore, 10)` (half cap), ratio + `capped` flag exposed in the breakdown | Design choice; not benchmarked |
+| 25 | **Confidence Fusion (MobileNet + keyword agreement)** | Image | Auto-categorisation of a listing | `backend/src/services/computerVision.js` → `classifyProduct()` | Keyword score **+2 per matched keyword** over lowercased filename+title (8 category keyword lists); branch 1: model conf ≥ `CONFIDENCE_THRESHOLD`(0.15) wins, **+0.10** if keyword agrees (capped 0.95); branch 2: sub-threshold model + agreeing keyword → `max(modelConf, 0.4 + keywordScore×0.1)`; branch 3: keyword-only → `0.4 + keywordScore×0.1` | Unit-tested; no benchmark |
+| 26 | **HMAC-SHA256 (salted) identifier registry** | Identity | Privacy-preserving identifier registry | `backend/src/services/provenance.js` → `hashIdentifier()`, `computeEventHash()` | Normalise (IMEI = 15 digits, VIN = 17 alnum, serial ≥ 4 alnum) → `crypto.createHmac('sha256', IDENTIFIER_HASH_SALT).update(normalized).digest('hex')`; unset salt → constant fallback **with a warning**; legacy bare-SHA-256 lookup migrates records in place; provenance chain `SHA256(prevHash \| eventType \| ownerId \| listingId \| transactionId \| timestampISO)`; possession code = 6 chars from a 32-char alphabet, **24h TTL**, `timingSafeEqual` comparison, lock after **5** failed attempts | Unit-tested (migration, possession, chain verification) |
+
+#### PART B — Pipeline Diagrams
+
+**B.1 IMAGE PIPELINE** (execution order in `backend/src/workers/imageProcessor.js`; conceptual order in §7.1)
+
+```
+Upload (Cloudinary) -> BullMQ "image-processing" job (concurrency 2)
+   |
+   v
+Buffer fetch (job payload or HTTP fetch of the Cloudinary URL)
+   |
+   +--> per image -------------------------------------------------------+
+   |    Sharp: resize 32x32 grayscale -> pHash family (imageHash.js)      |
+   |      plain pHash (16 hex) + mirror (flop) + r90/r180/r270 + vflip   |
+   |    Sharp: color histogram (+sharp.stats() for condition/damage)     |
+   |    COCO-SSD detect() -> NMS -> <=8 crops -> per-crop MobileNet      |
+   |      (classify + 1024-d embedding)                                  |
+   +---------------------------------------------------------------------+
+   |
+   v
+Aggregate: avg condition/damage (nulls skipped) ; primaryObjectIndex ;
+            cover-image detectedObjects ; bundleNote when >= 3 objects
+   |
+   v
+Category agreement (MobileNet vs chosen, conf >= 0.5)
+   |- agree          -> proceed
+   +- mismatch       -> CATEGORY_MISMATCH (+10) + widen pHash probe pool
+   |
+   v
+Comparables (same category, active+sold, newest 30)
+   |
+   v
+PRICE: local heuristic (depreciation -> CV/damage adjustments -> IQR comps)
+       -> ML /price-estimate (kNN on CLIP space, quantiles) -> blend
+       (ML_BLEND_WEIGHT, default 0.7 = 70% ML / 30% local) -> hybrid
+   |
+   v
+CLIP: POST /embed (cover image) -> 512-d embedding stored on product.embedding
+        POST /text-embed (title) -> image<->title cosine (null when ML down)
+   |
+   v
+FRAUD v2 (shadow by default): POST /fraud-check with listing + <=100 candidates
+        -> fraudProbability + fraudReasons (+ statusRecommendation)
+   |
+   v
+Persist main document: embedding, hashes (merge-preserving), aiAnalysis.*,
+        suggestedPrice/priceRange, status (pendingReview when ML >= 70 or
+        statusRecommendation === 'pendingReview')
+   |
+   v  (setImmediate, non-blocking)
+Background: POST /extract-cnn per image -> images[].cnnFeatures
+            -> assessVisualSimilarity() (cosine >= 0.90 / 0.97, cap 200)
+            -> atomic aggregation-pipeline update of riskAssessment
+   |
+   v
+Platform-wide CLIP scan (vectorSearch): top-K 50, crossCategory = true
+        cross-seller cosine >= 0.93 and pHash did NOT fire -> +20
+   |
+   v
+detectRisk() -> fuseFraudScores() -> aiAnalysis.riskAssessment
+        { riskScore, riskLevel, factors, riskFactorCategories,
+          v1RiskScore, v2FraudProbability, fusionMode, assessedAt }
+   |
+   v
+Enqueue priceAnalysisQueue "reprice" (delay 30s)
+```
+
+**B.2 TEXT PIPELINE** (near-duplicate description + scam-text detection)
+
+```
+listing.title + listing.description
+   |
+   v
+normalizeText(): lowercase, collapse whitespace  (textSimilarity.js)
+   |
+   v
+EXACT-MATCH FAST PATH
+   Product.countDocuments({ status:'active', same seller,
+                            description: identical })
+   |- hit (>= 1) -> +20 DUPLICATE_DESCRIPTION, similarity scan SKIPPED
+   v (miss)
+SIMILARITY PATH
+   |
+   +-- method selection ----------------------------------------------+
+   |   isMlTextEmbeddingAvailable() (health probe cached 30s TTL)      |
+   |     yes -> POST /text-embed for target + every candidate          |
+   |              cosine(targetEmbedding, candEmbedding)               |
+   |              threshold 0.92   method 'ml-text-embedding'          |
+   |     no  -> charNgramJaccard(target, cand, n=3)                    |
+   |              threshold 0.85   method 'char-3gram-jaccard'         |
+   +-------------------------------------------------------------------+
+   |
+   v
+Candidate scope, in order:
+   1. seller's own active listings      (cap DESC_DUP_SCAN_CAP = 100)
+         -> sameSeller hit  -> +20
+   2. other sellers, same category      (cap OTHER_SELLER_DESC_SCAN_CAP = 200)
+         -> crossSeller hit -> +15
+   |
+   v
+SCAM-TEXT (textScamAnalyzer.js, capped +25)
+   contact-info regex | urgency cliches | excess caps | excess punctuation
+   | lowball+urgency interaction
+   |
+   v
+Both blocks feed detectRisk() -> factors[] (+ content_scam_signals category)
+```
+
+**B.3 PRICE PIPELINE**
+
+```
+listing features (category, brand, model, MSRP, yearsUsed, condition,
+                  specifications, CV condition score, damage score)
+   |
+   v
+LOCAL BASELINE (priceRecommendation.js)
+   base = MSRP x (1 - annualRate)^years x brandMult x conditionMult
+          (no MSRP -> IQR-trimmed median of comparables x conditionMult)
+   x cvFactor     = score/100 x 0.4 + 0.6          (maps 0..100 -> 0.6..1.0)
+   x damageFactor = max(0.7, 1 - damage/250)
+   x 1.06 premium spec boost (pro|max|ultra|plus|premium|256|512|1tb|16gb|32gb)
+   blend 70/30 with the median of >= 3 same-condition comparables
+   confidence: 0.5 + 0.20 (MSRP) + 0.10 (comps, MSRP path only)
+                    + 0.10 (CV) + 0.05 (damage)   -> clamped to 0.95
+   |
+   v
+ML ESTIMATE (price_v2.py)
+   clean + prefer sold comps (>= 3 sold -> pool) -> kNN k=5 over the
+   512-d CLIP space (HNSW, category pre-filter) ->
+   log-price features -> LightGBM quantiles q10/q50/q90 ->
+   conformal +/- 0.1303 (80% coverage) -> exp() back to price
+   confidence = 0.6 x countFactor + 0.4 x spreadFactor
+   (confidence < 0.35 or knn_count < 3 -> wide range, suggestedPrice null)
+   |
+   v
+BLEND (mlClient.blendWithMl, weight = ML_BLEND_WEIGHT, default 0.7)
+   recommended = local x (1-w) + ml x w      min/max blended the same way
+   both sides always contribute; one side missing -> the other is used as-is
+   source: 'hybrid' | 'ml-service' | 'heuristic'
+   |
+   v
+OUTPUT: recommendedPrice, minPrice/maxPrice (+/-15%), p25/p75,
+        confidence, factors[], explanation
+```
+
+#### PART C — How Each Algorithm Is Achieved
+
+**1. DCT Perceptual Hashing (pHash)** — *Purpose:* turn an image into a 64-bit fingerprint that survives
+rescaling, recompression and mild edits, so byte-different but visually identical reposts collapse onto
+the same hash. *How:* Sharp decodes the buffer straight to a 32×32 raw grayscale plane; a separable 2D
+DCT runs over it (one horizontal pass into `temp`, one vertical pass into `output`) using a precomputed
+cosine table so ~65 000 `Math.cos` calls are not repeated per image; the top-left 8×8 block holds the
+64 lowest-frequency coefficients; the median of those 64 values becomes the threshold and each bit is
+`coeff >= median`; the 64 bits are packed via `BigInt` and rendered as 16 hex characters. Matches are
+decided by Hamming distance ≤ 12 in `detectRisk()` (§7.2, §7.11). *Limitation:* pHash is only robust to
+mild transforms — a 5% crop shifts the whole low-frequency structure (mean distance 16.83 in the
+validation corpus), so recall on modified same-item copies is 61/120, not 100%.
+
+**2. Hamming Distance** — *Purpose:* the comparison metric that decides whether two hashes are "the same
+image". *How:* both hex strings are widened to 64-bit binary via `BigInt`, then compared bit by bit
+(distance = number of positions that differ); `similarity()` rescales it to `1 − d/64`. Two deliberate
+edge cases: a missing operand returns 64 (maximally distant, never a match) and any operand that is not
+exactly 16 hex characters — the sha256 fallback written when Sharp is unavailable — returns `null` so the
+probe site skips the pair instead of comparing meaningless data (§7.2, §7.11, §18 item 3).
+*Limitation:* it is an all-or-nothing bit metric — it has no notion of "10% of the image changed", which
+is exactly why the CNN and CLIP layers exist as fallbacks.
+
+**3. Multi-Hash Set Probing** — *Purpose:* close the cheap-evasion paths of pHash: flipping, rotating or
+inverting a stolen image produces a hash far from the original (mean Hamming 27.17–29.63 in validation).
+*How:* `orientationHashesFromBuffer()` derives six hashes per image in one parallel call — plain,
+`sharp.flop()` (horizontal mirror), `rotate(90/180/270)` and `sharp.flip()` (vertical) — each fed back
+through `perceptualHashFromBuffer()`. `collectHashSet()` re-unions whatever is stored on the document
+(`imageHashes` + `mirrorHashes` + `rotationHashes` + `vflipHash`) so the probe always compares complete
+sets regardless of which fields a row was written with, and every probe hash is compared against every
+candidate hash (the cross product). The worker merge-preserves existing hashes so a re-run never erases
+mirror/rotation coverage (§7.2, §7.11). *Limitation:* it only catches **exact** transforms produced by
+the same Sharp pipeline — the 96/96 coverage figure assumes no intermediate re-encode; a re-shot photo
+at a different angle needs the CNN layer instead.
+
+**4. MobileNet v2 (TF.js)** — *Purpose:* classify uploads into marketplace categories and produce
+appearance embeddings. *How:* `mobilenet.load({version:2, alpha:1.0})` in the BullMQ worker; images are
+Sharp-resized to 224×224, `removeAlpha()`-ed, converted to a `tf.tensor3d([224,224,3])` float tensor of
+**raw** 0-255 pixels (the model normalises internally — pre-dividing by 255 collapses the effective input
+to near-black and yields near-uniform predictions), classified `topK=10`, and ImageNet labels map to the
+category taxonomy via ~130 hand-authored substring mappings (fused with keyword matching). The
+penultimate layer yields a 1024-dim embedding stored per image (§7.3, §7.12). *Limitation:*
+ImageNet-pretrained features encode semantic class more than instance identity — same-model products
+embed closely, which is why this signal is supporting-only (§7.4).
+
+**5. Cosine Similarity on CNN embeddings** — *Purpose:* decide whether two listings show the *same
+physical product* from different photos. *How:* for each image of listing A the strongest cosine against
+**any** image of listing B is kept (identical camera angles are not required), `aggregateSimilarity` is
+the mean of those best matches, and the peak single-pair value drives the signal. Cosine is computed
+directly (dot / product of norms) and clamped to [0,1] because negative cosine carries no positive
+similarity meaning; invalid or length-mismatched vectors return `null` and are skipped. The scan is
+bounded by `VISUAL_SCAN_CAP`=200 and fires `VISUAL_PRODUCT_SIMILARITY` at ≥0.90 (+10) or ≥0.97 (+20)
+(§7.4, §7.9). *Limitation:* two sellers legitimately owning the same model also score high — hence
+supporting-only, never proof.
+
+**6. Aggregate Fingerprinting** — *Purpose:* give each *listing* (not each image) one vector so
+multi-photo listings can be compared as a whole. *How:* `buildProductFingerprint()` averages the
+per-image `cnnFeatures` and L2-normalises the mean into a unit vector; the cover image's primary
+detected-object crop embedding is appended afterwards as an extra comparison vector — never mixed into
+the mean, so the two embedding spaces are never averaged together. When neither whole-image CNN features
+nor a crop embedding exist the function returns `available:false` with a reason, and unavailable ML is
+never treated as a fraud signal (§7.4, §7.12). *Limitation:* averaging washes out a distinctive photo — a
+listing with one good and four noisy images gets a diluted fingerprint.
+
+**7. COCO-SSD Object Detection (TF.js)** — *Purpose:* a bundle or desk-lot photo should be classified and
+fingerprinted by its *primary item*, not by the arrangement. *How:* `cocoSsd.load({base:
+'mobilenet_v2'})` shares the TF.js stack; the image is downscaled so its long edge is ≤800px for
+detection, `detect()` returns boxes which are filtered at score ≥0.5, de-duplicated by greedy
+non-maximum suppression (highest score first; a box is dropped when its IoU with a kept box exceeds 0.6)
+and capped at 8; coordinates are scaled back to original pixels so Sharp can `extract()` each crop with
+10% padding per side, clamped to the image bounds. Each crop is then classified and embedded by
+MobileNet, stored as `aiAnalysis.detectedObjects` with the highest-scoring box as the default primary
+index (§7.12). *Limitation:* only the 80 COCO classes are known, so exotic items silently fall back to
+whole-image analysis (never penalised).
+
+**8. CLIP ViT-B/32 (OpenCLIP)** — *Purpose:* one shared vector space for images *and* text, enabling
+semantic duplicate detection and title/photo consistency checks. *How:*
+`open_clip.create_model_and_transforms('ViT-B-32', pretrained='laion2b_s34b_b79k')` on CUDA if
+available; `encode_image` / `encode_text` outputs are L2-normalised to 512 dimensions so cosine
+similarity is a dot product, wrapped in an LRU cache (`EMBED_CACHE_SIZE`=4096) keyed by sha256 of the
+URL/text with batched single-pass encoding for cache misses. Two fraud uses: image↔title cosine
+**< 0.20** → `IMAGE_TEXT_MISMATCH` (+15), with generic/short titles skipped and the weak band 0.20–0.30
+shadow-logged; and a platform-wide cross-seller scan (`vectorSearch.js`, top-K 50,
+`crossCategory:true`) at cosine **≥ 0.93** → `CROSS_CATEGORY_IMAGE_REPOST` (+20), suppressed whenever
+the pHash gate already fired (§7.9, §7.11, §8.1). *Limitation:* the encoder is frozen and
+general-purpose — a listing whose title plausibly describes the wrong product still scores high.
+
+**9. CLIP Text Embeddings** — *Purpose:* catch "same description, two words changed" when the exact-match
+fast path missed. *How:* `mlClient.getTextEmbedding()` posts each normalised candidate text to
+`/text-embed` (5s timeout) and cache-checks ML service health (30s TTL) before spending the calls;
+cosine ≥ **0.92** against the target embedding is a match, otherwise the method falls back to 3-gram
+Jaccard. Scope is deliberately two-tier — the seller's own active listings first (cap 100, weight +20),
+then other sellers in the same category (cap 200, weight +15) — so the strongest signal (a seller reusing
+their own boilerplate) is checked first (§7.9, §7.11). *Limitation:* a full paraphrase evades both paths;
+the embedding sentence is a general encoder with no notion of scam intent.
+
+**10. Character 3-gram Jaccard Similarity** — *Purpose:* a zero-dependency similarity measure that keeps
+working when the ML service is down. *How:* `charNgramJaccard()` builds the *set* of overlapping
+3-character grams of both normalised strings and returns `|A ∩ B| / |A ∪ B|`; the shortcut rules are
+both-empty → 1 and one-empty → 0. The threshold is **0.85**, above the CLIP threshold because character
+overlap is noisier than semantic similarity. It is the fallback path only, and every factor string reports
+which method produced the match (§7.9, §7.11). *Limitation:* purely lexical — synonyms and rewording
+score low, and the same generic boilerplate phrased differently is invisible to it.
+
+**11. LightGBM (gradient-boosted trees)** — *Purpose:* replace the hand-weighted v1 rule engine with a
+model that learns signal interactions. *How:* a `lgb.Booster` loaded from `models_saved/fraud_v2.txt`
+consumes the 14 engineered features in a fixed `FEATURE_ORDER` (duplicate embeddings/pHash split by
+seller, image-text similarity, price z-score, account age and velocity, image geometry, stock-dimension
+and editing-software flags, vision-LLM flags) and outputs a probability. The three independent feature
+stages (duplicates, metadata, image-text similarity) run in a `ThreadPoolExecutor` with a per-stage
+timeout (`STAGE_TIMEOUT_S`=3s) and rule-based fallbacks, so no single stage can stall the request.
+Runtime thresholds come from `models_saved/fraud_v2_thresholds.json` (0.95 flag / 0.475 review) and
+override the env defaults; v2 runs in **shadow mode** by default (`ML_PIPELINE_V2=shadow`), so the v1
+additive score remains authoritative (§8.2, §8.4). *Limitation:* it was trained and evaluated on
+entirely synthetic data — `eval/RESULTS.md` states the generator encodes the same signals the pipeline
+detects, so recall 0.56 / AUC 0.888 must not be read as production evidence.
+
+**12. Isotonic Regression (sigmoid fallback)** — *Purpose:* turn the raw boosted score into a number that
+can be read as a probability and thresholded. *How:* during training an `IsotonicRegression`
+(`out_of_bounds='clip'`, y in [0,1]) is fitted on a held-out calibration split; if isotonic fitting fails,
+a Platt-sigmoid `LogisticRegression` is fitted on the raw score instead. The fitted calibrator is pickled
+to `fraud_v2_calibrator.pkl`, loaded at import time, and applied as
+`np.clip(calibrator.predict([raw]), 0, 1)` at inference; if calibration throws, the raw clipped score is
+used and a warning is logged (§8.2). *Limitation:* isotonic mapping is fitted on 400 synthetic samples — it
+can be badly wrong outside the training region and is monotone but not shape-robust.
+
+**13. Vision LLM (uncertainty-band gating)** — *Purpose:* get a semantic read ("this looks like a stock
+photo / a screenshot / edited") only for the genuinely ambiguous listings. *How:* after the LightGBM
+probability is computed, `in_uncertainty_band()` calls the vision model only when the probability lies in
+`VISION_LLM_BAND` **[0.25, 0.65]** *and* is within `VISION_LLM_MARGIN`=0.15 of a decision threshold; the
+request carries **one** image resized to ≤512px (JPEG q85) and a prompt that forces a JSON reply of
+`{flags, confidence}` with `max_tokens=128, temperature=0.0`; ≤6 flags come back and are fed into the
+classifier as two extra features for a single re-score. Missing API key, download failure, timeout or
+JSON parse failure all return `None`, leaving the two features at 0 and never breaking the request
+(§8.2). *Limitation:* it never ran in evaluation (no key, no images) — wired but unvalidated, and it adds
+per-call latency and cost precisely for the ambiguous middle band.
+
+**14. kNN + Quantile Regression (on CLIP embedding space)** — *Purpose:* produce a price estimate *and*
+an honest uncertainty interval. *How:* comparable listings are cleaned (MAD outlier cut) and sold prices
+preferred; neighbours come from the HNSW index over the 512-d CLIP space with a category pre-filter
+(`k=5` on the Node request path, `KNN_NEIGHBORS=12` as the service default), falling back to the first k
+recency-ordered comparables when no embedding or no index exists. Features (`log_original_price`,
+`years_used`, `condition_weight`, `is_sold_present`, `knn_median_log_price`, `knn_spread_log_price`,
+`knn_count`, `category_median_log_price`) feed three LightGBM quantile boosters trained on **log** price
+so multiplicative errors become additive; the conformal width (0.1303, α=0.20 for 80% coverage) widens
+the interval, then `exp()` maps back to price. Note the *exposed* P25/P75 are the midpoints
+`(q10+q50)/2` and `(q90+q50)/2`, not the 0.25/0.75 quantiles. Confidence is
+`0.6 × countFactor + 0.4 × spreadFactor`, and below 0.35 (or fewer than 3 neighbours) the endpoint
+returns a wide range with `suggestedPrice: null` instead of a misleading number (§8.3). *Limitation:*
+trained on synthetic listings whose comparables come from the same pool being scored, so MAE $39 /
+MAPE 16.9% is optimistic.
+
+**15. HNSW (via FAISS `IndexHNSWFlat`)** — *Purpose:* sub-linear nearest-neighbour search over embeddings
+as the catalogue grows. *How:* one `faiss.IndexHNSWFlat(512, H=32)` graph is built **per category** plus
+one global graph, all stores holding L2-normalised 512-d vectors and their item dicts; queries normalise
+the query, select the category store (or the global one), over-fetch `max(k*8, k+20)` candidates so
+post-hoc seller/self exclusion still leaves k results, and search with `efSearch=64`. The whole structure
+is pickled to `models_saved/ann_index.pkl` and reloaded at startup instead of being rebuilt per request;
+if FAISS is missing the index disables and callers use a brute-force path (§8.5). *Limitation:*
+approximate — neighbours can be missed (mitigated by over-fetching and by using the index only for
+retrieval, never for the final decision), and the in-process index is not shared across replicas.
+
+**16. Exponential Depreciation Model** — *Purpose:* a transparent first estimate of resale value from
+MSRP. *How:* `originalPrice × (1 − annualRate)^yearsUsed × brandMultiplier × conditionMultiplier`, with
+per-category annual rates (0.10–0.30), nine brand premiums (1.0–1.10) and five condition factors
+(0.25–0.95, 0.60 for an unknown condition). Each factor is appended to `factors[]` so the arithmetic is
+auditable; when no MSRP exists the same function instead takes the IQR-trimmed median of comparables
+times the condition multiplier (§7.8). *Limitation:* the constants are hand-authored, not fitted to sales
+data — a discontinued or collectible item follows the curve only by luck.
+
+**17. IQR Outlier Removal (Tukey's fence)** — *Purpose:* stop manipulated comparables from skewing the
+recommended price. *How:* `trimIQR()` needs at least 4 values, takes `q1 = s[floor(0.25n)]` and
+`q3 = s[floor(0.75n)]` from the ascending array, and keeps only values inside
+`[q1 − 1.5·IQR, q3 + 1.5·IQR]`; removed values are counted and reported as "(N outliers removed)" in the
+factor string. The Python price pipeline does the equivalent job with a MAD rule
+(`median ± 3.0 × 1.4826 × mad`) because log-priced comparables are handled there instead (§7.8, §8.3).
+*Limitation:* with fewer than four comparables no trimming happens at all, and Tukey's fence on a tiny
+sample can throw away legitimate prices.
+
+**18. Z-Score (price vs category median)** — *Purpose:* flag prices that are anomalous *for their
+category*, rather than against a fixed ratio to MSRP. *How:* `_metadata_features()` computes
+`z = (price − category_median) / category_std`, taking the median from `categoryMedianPrice` or
+`np.median(comparables)`, the spread from `np.std(comparables)` or a **0.35 × median** assumption when
+there are not enough comparables, and clipping the result to ±10 so one absurd listing cannot dominate a
+feature. The reason bands are `z < −2.5` (too low) and `z > 3.0` (too high) (§8.2). *Limitation:* the
+assumed 0.35 CV is a guess, and a category with genuinely bimodal pricing (used vs new mixed) yields a
+large σ that hides real anomalies.
+
+**19. Sobel-like Edge Density Analysis** — *Purpose:* a *heuristic* stand-in for damage detection with no
+model dependency. *How:* the image is reduced to a 64×64 grayscale thumbnail; for every interior pixel a
+forward-difference gradient `|gx| + |gy|` is computed and counted as an "edge" when it exceeds 60;
+`edgeRatio = edges / (62 × 62)` then maps to bands (>0.45 → +55, >0.35 → +35, >0.20 → +20, <0.08 →
+smooth). The maximum reachable score is 55, which makes the ≥50 "high" band reachable only by genuine
+heavy-wear evidence — and nothing else can push it there. Brightness/contrast/sharpness are deliberately
+**not** counted here, since they describe the photo and are already consumed by the condition score
+(§7.5). *Limitation:* textured patterns (fabric, mesh, busy backgrounds) raise edge density without any
+damage, and smooth surfaces with hairline cracks may fall under every band — it measures gradient
+statistics, not damage.
+
+**20. Pixel Statistics (brightness / contrast / sharpness)** — *Purpose:* a deterministic condition score
+with no ML dependency. *How:* `sharp.stats()` returns per-channel mean and standard deviation; brightness
+is the mean of channel means, contrast the mean of `min(stdev, 100)`, and sharpness the derived value
+`0.8 × contrast + 0.2 × brightness`. Subtracting penalties gives the score: dark (<60) −15, overexposed
+(>220) −10, low contrast (<20) −10, blur (sharpness <30) −8, clamped to [30,100] and labelled
+like-new/good/fair/poor; the same statistics feed both the price engine (`cvFactor`) and the fraud engine
+(damage ≥ 50 → +5). When Sharp or the decode fails the result is explicitly `score: null, available:
+false` and is never fabricated as 0 (§7.5, §7.8). *Limitation:* these are properties of the *photograph*,
+so a badly lit pristine item scores worse than a well-lit damaged one.
+
+**21. Lexical Pattern Matching (regex)** — *Purpose:* catch the low-effort, copy-pasted marketplace scam
+template. *How:* the concatenated title+description is tested against a small regex set (email,
+WhatsApp/`wa me`, an Indian mobile with optional `+91`/`0` prefix and a 6–9 first digit, plus a generic
+10-digit run) for **+10**; the count of matched urgency clichés ("urgent sale", "need cash", "moving
+abroad", "advance payment", "trust me"…) gives **+10** at ≥2 and **+15** at ≥4; formatting abuse (text
+length >30 with >50% of letters uppercase, or >5 exclamation marks) gives **+5** each; and the
+**interaction** rule — the word "urgent" *and* price < 40% of original price — gives **+15**. The whole
+block is capped at `MAX_CONTRIBUTION`=25 so a suspicious description can never flag a listing on its own,
+and the detailed strings are generalised to `content_scam_signals` for non-admin surfaces (§7.10).
+*Limitation:* it is a rule engine, not a learned model — synonyms, spacing and leetspeak defeat every
+rule, and it has no notion of intent.
+
+**22. Weighted Additive Signal Aggregation** — *Purpose:* combine every signal into one explainable 0-100
+score. *How:* `detectRisk()` walks a fixed list of blocks, each adding a hand-authored weight — duplicate
+image +35, graduated price anomaly 0–25 / 0–10, new-account high value +15, exact duplicate description
++20, near-duplicate description +20/+15, image–title mismatch +15, category mismatch +10, cross-category
+repost +20, listing bursts +15/+10, reports +15, damage ≥50 +5, identity signals +10…+100, visual
+similarity +10/+20, scam text 0–25 — then `clamp(score, 0, 100)` and bands at ≥50 high / ≥25 medium.
+Each contribution pushes a human-readable factor string, which is mapped to a coarse
+`riskFactorCategories` bucket for non-admin surfaces so internal thresholds stay hidden (§7.9, §18
+item 4). *Limitation:* weights are hand-authored, so the scale is not calibrated — a score of 60 is not
+"60% likely fraud", which is exactly why the calibrated v2 probability exists at all.
+
+**23. Max-Fusion Ensemble Policy** — *Purpose:* combine the v1 additive score with the v2 calibrated
+probability without either engine being able to hide the other. *How:* `fuseFraudScores()` takes
+`max(round(v1), round(v2 × 100))` when both are finite and records `fusionMode: 'v1+v2-max'`; v1-only
+yields `'v1'` and v2-only `'v2'`. The raw `v1RiskScore` and `v2FraudProbability` are persisted alongside
+the fused value for audit, and the risk level is re-derived from the fused score with the same ≥50/≥25
+bands. Both engines' outputs are also logged for shadow analysis and human outcome feedback (§8.4).
+*Limitation:* `max()` is conservative — it cannot downgrade a false positive from either engine, so a
+noisy v2 can permanently ratchet scores upward.
+
+**24. Logarithmic Scaling `log10(n+1)`** — *Purpose:* let sales volume raise trust without letting it run
+away to the cap. *How:* `salesScore = clamp(log10(salesCount + 1) × 10, 0, 20)` — the first few sales
+move the score a lot, the hundredth barely moves it. On top of that, the 20 most recent sales are examined
+for repeat-buyer concentration: `ratio = 1 − uniqueBuyers/20`, and when it exceeds 0.6 the sales component
+is clamped to 10 (half its maximum), with the ratio and the `capped` flag exposed in the breakdown so the
+cap is transparent rather than hidden (§7.7). *Limitation:* a logarithmic curve rewards the first ten
+sales and nothing after, and the concentration cap only inspects 20 recent sales — a patient confederate
+spread over months still passes.
+
+**25. Confidence Fusion (MobileNet + keyword agreement)** — *Purpose:* auto-suggest a category that is
+right more often than either signal alone. *How:* the keyword score over lowercased filename+title
+contributes **+2 per matched keyword** across eight category keyword lists; then: (1) a model prediction
+at or above `CONFIDENCE_THRESHOLD`=0.15 wins outright, with a small **+0.10** boost when the keyword
+metadata independently agrees; (2) a sub-threshold model prediction corroborated by the keyword evidence
+is accepted at `max(modelConfidence, 0.4 + keywordScore × 0.1)`, keeping the *lower* of the two
+confidences so low-confidence predictions stay visibly low; (3) keyword-only results fall back to
+`0.4 + keywordScore × 0.1`, and "Other" is returned only when there is no evidence at all. The resulting
+confidence also drives the `CATEGORY_MISMATCH` signal (fires only at ≥0.5) and therefore the pHash probe
+widening (§7.3, §7.9, §7.12). *Limitation:* the keyword lists are hand-authored and brand-name heavy — an
+unbranded item with a vague title falls back to "Other" and skips the mismatch check entirely.
+
+**26. HMAC-SHA256 (salted) identifier registry** — *Purpose:* let the platform detect serial/IMEI/VIN
+reuse without ever storing a raw identifier. *How:* `hashIdentifier()` normalises the value first (IMEI =
+exactly 15 digits, VIN = exactly 17 alphanumerics, serial ≥ 4 alphanumerics) and then applies
+`crypto.createHmac('sha256', IDENTIFIER_HASH_SALT).update(normalized).digest('hex')`; the salt is what
+defeats rainbow tables over the small, structured identifier space. Records written before salting are
+recovered by a legacy bare-SHA-256 lookup and upgraded in place. The registry additionally records
+possession verification (a 6-character code from a 32-character alphabet, 24h TTL, `timingSafeEqual`
+comparison, lockout after 5 failed attempts) and chains every ownership event with
+`SHA256(previousHash | eventType | ownerId | listingId | transactionId | timestampISO)` from a `GENESIS`
+root, so tampering with the chain is detectable (§7.6, §12). *Limitation:* the unset-salt fallback is a
+*constant* (it warns loudly but works), so a deployment that forgets `IDENTIFIER_HASH_SALT` gets
+rainbow-able hashes; and a hash lookup proves reuse, never possession — which is why the code challenge
+exists.
 
 ---
 
