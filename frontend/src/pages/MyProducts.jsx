@@ -28,6 +28,7 @@ export default function MyProducts() {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [appealTarget, setAppealTarget] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
 
   useEffect(() => {
     productService
@@ -47,11 +48,11 @@ export default function MyProducts() {
   };
 
   const handleDelete = async (id) => {
-    if (!confirm('Delete this listing? This action cannot be undone.')) return;
     try {
       await productService.delete(id);
       setItems((prev) => prev.filter((p) => p._id !== id));
       toast.success('Listing deleted');
+      setDeleteTarget(null);
     } catch {
       toast.error('Failed to delete');
     }
@@ -236,7 +237,7 @@ export default function MyProducts() {
                         Edit
                       </Link>
                       <motion.button
-                        onClick={() => handleDelete(p._id)}
+                        onClick={() => setDeleteTarget(p)}
                         whileTap={{ scale: 0.97 }}
                         className="btn text-xs text-red-600 hover:bg-red-50"
                       >
@@ -257,6 +258,22 @@ export default function MyProducts() {
           onClose={() => setAppealTarget(null)}
           onSubmit={(reason) => submitAppeal(appealTarget._id, reason)}
         />
+      )}
+      {deleteTarget && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/50 backdrop-blur-sm p-4">
+          <div className="card w-full max-w-md p-6">
+            <h3 className="font-display text-xl font-bold">Remove listing?</h3>
+            <p className="mt-2 text-sm text-slate-500">
+              Remove this listing permanently? This cannot be undone.
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={() => setDeleteTarget(null)} className="btn">Cancel</button>
+              <button type="button" onClick={() => handleDelete(deleteTarget._id)} className="btn bg-red-600 text-white hover:bg-red-700">
+                Remove listing
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </PageTransition>
   );

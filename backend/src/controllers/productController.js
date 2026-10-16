@@ -5,6 +5,9 @@ const User = require('../models/User');
 const ProductIdentity = require('../models/ProductIdentity');
 const Review = require('../models/Review');
 const Sale = require('../models/Sale');
+const Favorite = require('../models/Favorite');
+const Notification = require('../models/Notification');
+const AuditLog = require('../models/AuditLog');
 const { REVIEWABLE_STATUSES } = require('../models/Sale');
 const AppError = require('../utils/AppError');
 const { uploadToCloudinary, deleteFromCloudinary } = require('../config/cloudinary');
@@ -1181,11 +1184,20 @@ const deleteProduct = async (req, res, next) => {
     const product = await Product.findById(req.params.id);
     if (!product) throw new AppError('Product not found', 404, 'NOT_FOUND');
 
-    if (
-      product.seller.toString() !== req.user._id.toString() &&
-      req.user.role !== 'admin'
-    ) {
+    if (product.seller.toString() !== req.user._id.toString()) {
       throw new AppError('Not authorized to delete this listing', 403, 'FORBIDDEN');
+    }
+
+    // A seller cannot make an in-flight checkout disappear. Admin deletion is
+    // deliberately handled by the admin route, not this owner-facing flow.
+    if (product.status === 'sold') {
+      const incompleteOrder = await Sale.exists({
+        product: product._id,
+        status: { $nin: ['completed', 'cancelled', 'refunded', 'payment_failed'] },
+      });
+      if (incompleteOrder) {
+        throw new AppError('Complete the order first', 409, 'ORDER_INCOMPLETE');
+      }
     }
 
     // Delete images from Cloudinary — only assets not still referenced
@@ -1197,6 +1209,25 @@ const deleteProduct = async (req, res, next) => {
 
     product.status = 'removed';
     await product.save();
+
+    await Promise.all([
+      Favorite.deleteMany({ product: product._id }),
+      Notification.deleteMany({ 'payload.productId': product._id }),
+      AuditLog.create({
+        actor: req.user._id,
+        action: 'product_deleted',
+        targetType: 'product',
+        target: product._id,
+        metadata: { title: product.title, seller: product.seller },
+        ipAddress: req.ip || '',
+        userAgent: req.get('user-agent') || '',
+      }),
+    ]);
+
+    req.app.get('io')?.emit('product_status', {
+      productId: product._id.toString(),
+      status: 'removed',
+    });
 
     res.json({ success: true, message: 'Product removed' });
   } catch (err) {
