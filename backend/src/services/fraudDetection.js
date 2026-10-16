@@ -30,6 +30,9 @@ const { searchVectorNearestNeighbors } = require('./vectorSearch');
 const {
   buildProductFingerprint,
   compareProductFingerprints,
+  compareObjectCentric,
+  decideSameSellerMatch,
+  decideCrossSellerMatch,
   MEDIUM_SIMILARITY_THRESHOLD,
   STRONG_SIMILARITY_THRESHOLD,
   MAX_CANDIDATES,
@@ -119,6 +122,22 @@ const CROSS_CATEGORY_IMAGE_REPOST_SIGNAL = 'CROSS_CATEGORY_IMAGE_REPOST';
 const CROSS_CATEGORY_IMAGE_REPOST_FACTOR =
   "CROSS_CATEGORY_IMAGE_REPOST: platform-wide image match to another seller's listing in another category — supporting evidence";
 
+// Repeat relists are evaluated against bounded, same-seller fingerprint history.
+const REPEAT_RELIST_SIMILARITY_THRESHOLD = envNum('REPEAT_RELIST_SIMILARITY_THRESHOLD', 0.85);
+const REPEAT_RELIST_LOOKBACK_DAYS = envNum('REPEAT_RELIST_LOOKBACK_DAYS', 60);
+const REPEAT_RELIST_SCAN_CAP = Math.max(1, Math.floor(envNum('REPEAT_RELIST_SCAN_CAP', 20)));
+const REPEAT_RELIST_MIN_MATCHES = Math.max(2, Math.floor(envNum('REPEAT_RELIST_MIN_MATCHES', 2)));
+const REPEAT_RELIST_PRICE_DROP_RATIO = envNum('REPEAT_RELIST_PRICE_DROP_RATIO', 0.8);
+const REPEAT_RELIST_PATTERN_WEIGHT = 15;
+const REPEAT_RELIST_PATTERN_SIGNAL = 'REPEAT_RELIST_PATTERN';
+const REPEAT_RELIST_PATTERN_FACTOR =
+  'Item repeatedly relisted by this seller with dropping prices';
+
+const DOUBLE_SELLING_SIGNAL = 'DOUBLE_SELLING';
+const DOUBLE_SELLING_WEIGHT = 30;
+const SAME_SELLER_RELIST_SIGNAL = 'SAME_SELLER_RELIST';
+const SAME_SELLER_RELIST_WEIGHT = 25;
+
 // ── Listing velocity (behavioral) ───────────────────────────────────────────
 // A seller publishing many listings in a short window is a classic
 // mass-spam / account-takeover pattern. Counted with a single indexed query
@@ -153,9 +172,10 @@ const RISK_FACTOR_CATEGORIES = [
 
 const mapFactorToCategory = (factor) => {
   const f = String(factor || '');
-  if (/duplicate image|visual product similarity|cross_category_image_repost/i.test(f)) {
+  if (/duplicate image|visual product similarity|cross_category_image_repost|same_seller_relist|double_selling/i.test(f)) {
     return 'possible_duplicate_image';
   }
+  if (/repeat relist pattern/i.test(f)) return 'possible_duplicate_image';
   if (/image-text mismatch|does not match its title|category mismatch|category disagreement|category disagrees/i.test(f)) {
     return CONTENT_MISMATCH_CATEGORY;
   }
@@ -506,6 +526,7 @@ const detectRisk = async ({
   categoryMismatch = false,
   additionalScanCategories = [],
   crossCategoryRepost = null,
+  excludeProductId,
 }) => {
   const factors = [];
   let riskScore = 0;
@@ -699,6 +720,20 @@ const detectRisk = async ({
     seenSignals.add(signal);
     riskScore += config.weight;
     factors.push(config.factor);
+  }
+
+  // 6b. Same-seller object-centric match (crop-vs-crop). Distinct from the
+  //     supporting-only cross-seller visual signal: a seller relisting the
+  //     same physical item (active) or listing it again after a sale (sold)
+  //     is DOUBLE_SELLING / SAME_SELLER_RELIST. Never matches this productId.
+  const sameSellerMatch = await assessSameSellerDuplicate({
+    product,
+    excludeProductId,
+  });
+  if (sameSellerMatch?.signal && !seenSignals.has(sameSellerMatch.signal)) {
+    seenSignals.add(sameSellerMatch.signal);
+    riskScore += sameSellerMatch.weight;
+    factors.push(sameSellerMatch.factor);
   }
 
   // 7. Visual product fingerprint similarity (SCRUM-25 supporting signal).
@@ -934,19 +969,78 @@ const fuseFraudScores = ({ v1RiskScore = null, v2FraudProbability = null } = {})
  * @param {string} [params.excludeProductId] Extra listing to exclude
  * @returns {Object} { available, reason?, signal?, similarity?, similarTo? }
  */
+/**
+ * Same-seller object-centric duplicate. Compares crop embeddings (and HSV
+ * colour) against this seller's other active/sold listings. Never matches
+ * `product._id` (self-edit). DOUBLE_SELLING when the prior is sold;
+ * SAME_SELLER_RELIST when the prior is still active.
+ */
+const assessSameSellerDuplicate = async ({ product, excludeProductId } = {}) => {
+  if (!product?._id) return null;
+  const sellerId = product.seller?._id || product.seller;
+  if (!sellerId) return null;
+
+  const excluded = [product._id];
+  if (excludeProductId) excluded.push(excludeProductId);
+
+  const priors = await Product.find({
+    _id: { $nin: excluded },
+    seller: sellerId,
+    status: { $in: ['active', 'sold'] },
+  })
+    .select('title status images.cnnFeatures embedding aiAnalysis.detectedObjects')
+    .lean();
+
+  let best = null;
+  for (const prior of priors) {
+    const comparison = compareObjectCentric(product, prior);
+    const decision = decideSameSellerMatch(comparison);
+    if (!decision.matched) continue;
+    if (!best || decision.similarity > best.similarity) {
+      best = {
+        ...decision,
+        prior,
+        comparison,
+      };
+    }
+  }
+  if (!best) return null;
+
+  const sold = best.prior.status === 'sold';
+  const pct = Math.round((best.similarity || 0) * 100);
+  const modality = best.reason === 'crop+color'
+    ? `crop cosine ${pct}% + HSV corr ${Math.round((best.colorCorr || 0) * 100)}%`
+    : `${best.reason || 'crop'} cosine ${pct}%`;
+  const signal = sold ? DOUBLE_SELLING_SIGNAL : SAME_SELLER_RELIST_SIGNAL;
+  const weight = sold ? DOUBLE_SELLING_WEIGHT : SAME_SELLER_RELIST_WEIGHT;
+  const verb = sold ? 'sold listing' : 'active listing';
+  return {
+    signal,
+    weight,
+    similarity: best.similarity,
+    reason: best.reason,
+    similarTo: best.prior._id.toString(),
+    category: 'possible_duplicate_image',
+    factor: `${signal}: same-seller object match to ${verb} "${best.prior.title}" (${modality})`,
+  };
+};
+
 const assessVisualSimilarity = async ({ productId, excludeProductId }) => {
   const product = await Product.findById(productId)
-    .select('title category images.cnnFeatures')
+    .select('title category seller images.cnnFeatures embedding aiAnalysis.detectedObjects')
     .lean();
   if (!product) {
     return { available: false, reason: 'product_not_found' };
   }
 
   const fingerprint = buildProductFingerprint(product);
-  if (!fingerprint.available) {
-    return { available: false, reason: fingerprint.reason };
+  const objectSelf = compareObjectCentric(product, product);
+  const hasObjectFeatures = objectSelf.bothHaveCrops || fingerprint.available;
+  if (!hasObjectFeatures) {
+    return { available: false, reason: fingerprint.reason || 'cnn_features_unavailable' };
   }
 
+  const sellerId = product.seller?._id || product.seller;
   const candidateFilter = {
     status: { $in: ['active', 'sold'] },
   };
@@ -954,11 +1048,16 @@ const assessVisualSimilarity = async ({ productId, excludeProductId }) => {
   if (product.category) {
     candidateFilter.category = product.category;
   }
+  // Cross-seller supporting-only: same-seller matches are owned by
+  // assessSameSellerDuplicate and must not also pick up +10/+20 here.
+  if (sellerId) {
+    candidateFilter.seller = { $ne: sellerId };
+  }
 
   const [candidateTotal, candidates] = await Promise.all([
     Product.countDocuments(candidateFilter),
     Product.find(candidateFilter)
-      .select('title category images.cnnFeatures')
+      .select('title category seller images.cnnFeatures embedding aiAnalysis.detectedObjects')
       .limit(MAX_CANDIDATES)
       .lean(),
   ]);
@@ -970,13 +1069,27 @@ const assessVisualSimilarity = async ({ productId, excludeProductId }) => {
 
   let best = null;
   for (const candidate of candidates) {
-    const candidateFingerprint = buildProductFingerprint(candidate);
-    const comparison = compareProductFingerprints(fingerprint, candidateFingerprint);
-    if (!comparison.available) continue;
-    if (!best || comparison.similarity > best.similarity) {
+    const objectComparison = compareObjectCentric(product, candidate);
+    const objectDecision = decideCrossSellerMatch(objectComparison);
+    let similarity = objectDecision.matched ? objectDecision.similarity : null;
+    let aggregateSimilarity = null;
+
+    // Whole-image fingerprint remains available when crops are missing so
+    // the supporting ≥0.90 / ≥0.97 bands still fire on stored vectors.
+    if (!objectComparison.bothHaveCrops) {
+      const candidateFingerprint = buildProductFingerprint(candidate);
+      const comparison = compareProductFingerprints(fingerprint, candidateFingerprint);
+      if (comparison.available) {
+        similarity = comparison.similarity;
+        aggregateSimilarity = comparison.aggregateSimilarity;
+      }
+    }
+
+    if (typeof similarity !== 'number') continue;
+    if (!best || similarity > best.similarity) {
       best = {
-        similarity: comparison.similarity,
-        aggregateSimilarity: comparison.aggregateSimilarity,
+        similarity,
+        aggregateSimilarity,
         similarTo: candidate._id.toString(),
         similarToTitle: candidate.title,
       };
@@ -996,6 +1109,115 @@ const assessVisualSimilarity = async ({ productId, excludeProductId }) => {
     weight,
     factor,
   };
+};
+
+/**
+ * Look for same-seller historical listings with a matching image fingerprint.
+ * A signal requires at least two matches and a price drop against every match.
+ */
+const assessRepeatRelistPattern = async ({ productId, now = new Date() } = {}) => {
+  const product = await Product.findById(productId)
+    .select('seller price createdAt images.cnnFeatures')
+    .lean();
+  if (!product?.seller || !Number.isFinite(Number(product.price))) return null;
+
+  const fingerprint = buildProductFingerprint(product);
+  if (!fingerprint.available) return null;
+
+  const currentCreatedAt = product.createdAt ? new Date(product.createdAt) : now;
+  const lookbackStart = new Date(now.getTime() - REPEAT_RELIST_LOOKBACK_DAYS * 86400000);
+  const priorListings = await Product.find({
+    _id: { $ne: product._id },
+    seller: product.seller,
+    status: { $in: ['sold', 'expired', 'removed'] },
+    createdAt: { $gte: lookbackStart, $lt: currentCreatedAt },
+  })
+    .select('price createdAt images.cnnFeatures')
+    .sort({ createdAt: -1 })
+    .limit(REPEAT_RELIST_SCAN_CAP)
+    .lean();
+
+  const matchingPriors = [];
+  for (const prior of priorListings) {
+    const priorPrice = Number(prior.price);
+    if (!Number.isFinite(priorPrice) || priorPrice <= 0) continue;
+    const priorFingerprint = buildProductFingerprint(prior);
+    if (!priorFingerprint.available) continue;
+
+    const comparison = compareProductFingerprints(fingerprint, priorFingerprint);
+    if (comparison.available && comparison.similarity >= REPEAT_RELIST_SIMILARITY_THRESHOLD) {
+      matchingPriors.push(prior);
+    }
+  }
+
+  if (
+    matchingPriors.length < REPEAT_RELIST_MIN_MATCHES ||
+    !matchingPriors.every((prior) => Number(product.price) < Number(prior.price) * REPEAT_RELIST_PRICE_DROP_RATIO)
+  ) {
+    return null;
+  }
+
+  return {
+    signal: REPEAT_RELIST_PATTERN_SIGNAL,
+    weight: REPEAT_RELIST_PATTERN_WEIGHT,
+    factor: REPEAT_RELIST_PATTERN_FACTOR,
+    category: 'possible_duplicate_image',
+    matchedCount: matchingPriors.length,
+  };
+};
+
+/** Atomically append a supporting signal, adding its weight only once. */
+const recordSupportingRiskSignal = async ({ productId, weight, factor, category } = {}) => {
+  if (!productId || !Number.isFinite(weight) || !factor || !category) return false;
+
+  const factors = { $ifNull: ['$aiAnalysis.riskAssessment.factors', []] };
+  const categories = { $ifNull: ['$aiAnalysis.riskAssessment.riskFactorCategories', []] };
+  const factorExists = { $in: [factor, factors] };
+  const categoryExists = { $in: [category, categories] };
+
+  const result = await Product.updateOne(
+    { _id: productId },
+    [
+      {
+        $set: {
+          'aiAnalysis.riskAssessment.factors': {
+            $cond: [factorExists, factors, { $concatArrays: [factors, [factor]] }],
+          },
+          'aiAnalysis.riskAssessment.riskFactorCategories': {
+            $cond: [categoryExists, categories, { $concatArrays: [categories, [category]] }],
+          },
+          'aiAnalysis.riskAssessment.riskScore': {
+            $cond: [
+              factorExists,
+              { $ifNull: ['$aiAnalysis.riskAssessment.riskScore', 0] },
+              {
+                $min: [
+                  100,
+                  { $add: [{ $ifNull: ['$aiAnalysis.riskAssessment.riskScore', 0] }, weight] },
+                ],
+              },
+            ],
+          },
+          'aiAnalysis.riskAssessment.assessedAt': new Date(),
+        },
+      },
+      {
+        $set: {
+          'aiAnalysis.riskAssessment.riskLevel': {
+            $cond: [
+              { $gte: ['$aiAnalysis.riskAssessment.riskScore', 50] },
+              'high',
+              {
+                $cond: [{ $gte: ['$aiAnalysis.riskAssessment.riskScore', 25] }, 'medium', 'low'],
+              },
+            ],
+          },
+        },
+      },
+    ]
+  );
+
+  return result.modifiedCount > 0;
 };
 
 module.exports = {
@@ -1020,6 +1242,16 @@ module.exports = {
   CROSS_CATEGORY_SIM_THRESHOLD,
   CROSS_CATEGORY_SCAN_K,
   assessCrossCategoryImageRepost,
+  assessRepeatRelistPattern,
+  assessSameSellerDuplicate,
+  recordSupportingRiskSignal,
+  DOUBLE_SELLING_SIGNAL,
+  DOUBLE_SELLING_WEIGHT,
+  SAME_SELLER_RELIST_SIGNAL,
+  SAME_SELLER_RELIST_WEIGHT,
+  REPEAT_RELIST_PATTERN_SIGNAL,
+  REPEAT_RELIST_PATTERN_WEIGHT,
+  REPEAT_RELIST_SIMILARITY_THRESHOLD,
   LISTING_BURST_SIGNAL,
   LISTING_BURST_NEW_ACCOUNT_SIGNAL,
   LISTING_BURST_WEIGHT,

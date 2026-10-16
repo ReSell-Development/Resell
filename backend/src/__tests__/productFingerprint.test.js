@@ -10,7 +10,12 @@ const {
   buildProductFingerprint,
   compareProductFingerprints,
 } = require('../services/productFingerprint');
-const { detectRisk, assessVisualSimilarity } = require('../services/fraudDetection');
+const {
+  detectRisk,
+  assessVisualSimilarity,
+  assessRepeatRelistPattern,
+  recordSupportingRiskSignal,
+} = require('../services/fraudDetection');
 
 const extractToken = (res) => {
   const setCookie = res.headers['set-cookie'] || [];
@@ -267,6 +272,129 @@ describe('Product Fingerprint & Possession Verification (SCRUM-25)', () => {
       // Risk assessment was still produced (low, no visual factor)
       const product = await Product.findById(a.body.product._id);
       expect(product.aiAnalysis.riskAssessment.riskLevel).toBe('low');
+    });
+  });
+
+  describe('Repeat relist pattern', () => {
+    const createHistoryListing = async ({ sellerId, price, status, createdAt, vector }) => {
+      const listing = await Product.create({
+        title: 'Repeated item',
+        description: `History ${new mongoose.Types.ObjectId()}`,
+        price,
+        category: categoryId,
+        seller: sellerId,
+        status,
+        images: [{ url: `https://example.com/${new mongoose.Types.ObjectId()}.jpg`, cnnFeatures: vector }],
+      });
+      await Product.collection.updateOne({ _id: listing._id }, { $set: { createdAt } });
+      return listing;
+    };
+
+    it('fires for two matching prior listings when the current price is below 80% of each', async () => {
+      const now = new Date('2026-10-15T12:00:00.000Z');
+      await createHistoryListing({
+        sellerId: seller._id,
+        price: 1000,
+        status: 'sold',
+        createdAt: new Date('2026-09-01T12:00:00.000Z'),
+        vector: KEYBOARD_A,
+      });
+      await createHistoryListing({
+        sellerId: seller._id,
+        price: 900,
+        status: 'removed',
+        createdAt: new Date('2026-09-15T12:00:00.000Z'),
+        vector: KEYBOARD_A,
+      });
+      const current = await createHistoryListing({
+        sellerId: seller._id,
+        price: 500,
+        status: 'active',
+        createdAt: new Date('2026-10-01T12:00:00.000Z'),
+        vector: KEYBOARD_B,
+      });
+
+      const result = await assessRepeatRelistPattern({ productId: current._id, now });
+      expect(result).toMatchObject({
+        signal: 'REPEAT_RELIST_PATTERN',
+        weight: 15,
+        category: 'possible_duplicate_image',
+        matchedCount: 2,
+        factor: 'Item repeatedly relisted by this seller with dropping prices',
+      });
+    });
+
+    it('does not fire with only one prior fingerprint match', async () => {
+      const now = new Date('2026-10-15T12:00:00.000Z');
+      await createHistoryListing({
+        sellerId: seller._id,
+        price: 1000,
+        status: 'sold',
+        createdAt: new Date('2026-09-01T12:00:00.000Z'),
+        vector: KEYBOARD_A,
+      });
+      const current = await createHistoryListing({
+        sellerId: seller._id,
+        price: 500,
+        status: 'active',
+        createdAt: new Date('2026-10-01T12:00:00.000Z'),
+        vector: KEYBOARD_B,
+      });
+
+      await expect(assessRepeatRelistPattern({ productId: current._id, now })).resolves.toBeNull();
+    });
+
+    it('does not fire unless the price is below 80% of every matching prior', async () => {
+      const now = new Date('2026-10-15T12:00:00.000Z');
+      await createHistoryListing({
+        sellerId: seller._id,
+        price: 1000,
+        status: 'sold',
+        createdAt: new Date('2026-09-01T12:00:00.000Z'),
+        vector: KEYBOARD_A,
+      });
+      await createHistoryListing({
+        sellerId: seller._id,
+        price: 1100,
+        status: 'removed',
+        createdAt: new Date('2026-09-15T12:00:00.000Z'),
+        vector: KEYBOARD_B,
+      });
+      const current = await createHistoryListing({
+        sellerId: seller._id,
+        price: 850,
+        status: 'active',
+        createdAt: new Date('2026-10-01T12:00:00.000Z'),
+        vector: KEYBOARD_A,
+      });
+
+      await expect(assessRepeatRelistPattern({ productId: current._id, now })).resolves.toBeNull();
+    });
+
+    it('stores the supporting score and generalized category only once', async () => {
+      const current = await createHistoryListing({
+        sellerId: seller._id,
+        price: 500,
+        status: 'active',
+        createdAt: new Date(),
+        vector: KEYBOARD_A,
+      });
+      const signal = {
+        signal: 'REPEAT_RELIST_PATTERN',
+        weight: 15,
+        factor: 'Item repeatedly relisted by this seller with dropping prices',
+        category: 'possible_duplicate_image',
+      };
+
+      await recordSupportingRiskSignal({ productId: current._id, ...signal });
+      await recordSupportingRiskSignal({ productId: current._id, ...signal });
+
+      const updated = await Product.findById(current._id).lean();
+      expect(updated.aiAnalysis.riskAssessment.riskScore).toBe(15);
+      expect(updated.aiAnalysis.riskAssessment.factors).toEqual([signal.factor]);
+      expect(updated.aiAnalysis.riskAssessment.riskFactorCategories).toEqual([
+        'possible_duplicate_image',
+      ]);
     });
   });
 

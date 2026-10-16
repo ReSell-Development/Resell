@@ -27,14 +27,15 @@ const register = async (req, res, next) => {
       throw new AppError('Name, email and password are required', 400, 'VALIDATION_ERROR');
     }
 
-    const existing = await User.findOne({ email });
+    const normalizedEmail = email.toLowerCase().trim();
+    const existing = await User.findOne({ email: normalizedEmail });
     if (existing) {
       throw new AppError('Email is already registered', 400, 'DUPLICATE_EMAIL');
     }
 
     const user = await User.create({
-      name,
-      email,
+      name: name.trim(),
+      email: normalizedEmail,
       password,
       role: role === 'seller' ? 'seller' : 'buyer',
       location: location || '',

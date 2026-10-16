@@ -45,232 +45,240 @@ const CATEGORIES = [
 
 const PRODUCTS = [
   {
-    title: 'iPhone 13 128GB — Midnight Blue',
-    category: 'Mobile Phones',
-    seller: 'priya',
-    price: 520,
-    originalPrice: 799,
-    brand: 'Apple',
-    model: 'iPhone 13',
-    condition: 'like-new',
-    yearsUsed: 1,
-    image: 'iphone-13-midnight.jpg',
-    description:
-      'Great condition iPhone 13, always used with a case and tempered-glass screen protector. Battery health 89%, includes the original Lightning cable and box. Face ID and all cameras fully working — no scratches, no dents. Selling because I upgraded to the 15.',
-    specs: [
-      { key: 'Storage', value: '128GB' },
-      { key: 'Color', value: 'Midnight Blue' },
-      { key: 'Battery Health', value: '89%' },
-      { key: 'Network', value: 'Unlocked (all carriers)' },
-    ],
-  },
-  {
-    title: 'iPhone 13 Pro Max 256GB — Graphite',
-    category: 'Mobile Phones',
-    seller: 'arjun',
-    price: 620,
-    originalPrice: 899,
-    brand: 'Apple',
-    model: 'iPhone 13 Pro Max',
-    condition: 'good',
-    yearsUsed: 2,
-    // Same image file as first listing — CASE 1: exact duplicate (pHash hit expected)
-    image: 'iphone-13-midnight.jpg',
-    description:
-      'iPhone 13 Pro Max with 256GB storage in graphite. ProMotion 120Hz display, triple-lens camera system. Battery health 85%. Includes the original box. Ships fast.',
-    specs: [
-      { key: 'Storage', value: '256GB' },
-      { key: 'Color', value: 'Graphite' },
-      { key: 'Battery Health', value: '85%' },
-    ],
-  },
-  {
-    title: 'MacBook Pro 14" M1 Pro — 16GB / 1TB',
-    category: 'Computers & Laptops',
-    seller: 'meera',
-    price: 1450,
-    originalPrice: 2199,
-    brand: 'Apple',
-    model: 'MacBook Pro 14"',
-    condition: 'like-new',
-    yearsUsed: 1,
-    image: 'macbook-pro-14.jpg',
-    description:
-      'MacBook Pro 14-inch with the M1 Pro chip, 16GB unified memory and a 1TB SSD. 96% design battery capacity. Purchased last year for freelance video work, barely travelled. Comes with the original 96W MagSafe charger. Unboxed this week for photos only.',
-    specs: [
-      { key: 'Processor', value: 'Apple M1 Pro' },
-      { key: 'RAM', value: '16GB' },
-      { key: 'Storage', value: '1TB SSD' },
-      { key: 'Battery Cycles', value: '61' },
-    ],
-  },
-  {
-    title: 'Sony WH-1000XM4 Wireless Headphones',
-    category: 'Electronics',
-    seller: 'meera',
-    price: 210,
-    originalPrice: 349,
-    brand: 'Sony',
-    model: 'WH-1000XM4',
-    condition: 'like-new',
-    yearsUsed: 1,
-    image: 'sony-wh1000xm4.jpg',
-    description:
-      'Industry-leading noise-cancelling headphones. 30-hour battery life, multipoint pairing, and superb call quality. Used indoors only, comes with the carry case, both cables and the airline adapter. Genuine reason for sale — I was given AirPods Max as a gift.',
-    specs: [
-      { key: 'Type', value: 'Over-ear wireless' },
-      { key: 'Battery Life', value: '30 hours' },
-      { key: 'ANC', value: 'Yes' },
-    ],
-  },
-  {
-    title: 'Nike Air Force 1 — White, US Size 10',
-    category: 'Fashion',
-    seller: 'priya',
-    price: 65,
-    originalPrice: 120,
-    brand: 'Nike',
-    model: 'Air Force 1',
-    condition: 'good',
-    yearsUsed: 2,
-    image: 'nike-af1-white.jpg',
-    description:
-      'Classic white Air Force 1s, US size 10. Worn for a season, still plenty of life left. Cleaned and wiped before listing. Minor creasing on the toe box as expected. Original box included.',
-    specs: [
-      { key: 'Size', value: 'US 10' },
-      { key: 'Color', value: 'White' },
-    ],
-  },
-  {
-    title: "Women's Leather Jacket — Camel, Size M",
-    category: 'Fashion',
-    seller: 'meera',
-    price: 120,
-    originalPrice: 260,
-    brand: 'Everlane',
-    condition: 'good',
-    yearsUsed: 3,
-    image: 'leather-jacket-camel.jpg',
-    description:
-      'Genuine leather jacket in a warm camel tone, size medium. Broke in beautifully — soft and comfortable. Zips all work, lining is intact. A couple of light surface scuffs give it character.',
-    specs: [
-      { key: 'Material', value: 'Genuine leather' },
-      { key: 'Size', value: 'M' },
-    ],
-  },
-  {
-    title: 'Modern LED Desk Lamp with USB Charging',
+    title: 'Milton Thermosteel Flask 1L — Teal',
     category: 'Home & Garden',
     seller: 'priya',
-    price: 28,
-    originalPrice: 60,
-    brand: 'BenQ',
-    model: 'e-Reading',
+    price: 550,
+    originalPrice: 1200,
+    brand: 'Milton',
+    model: 'Thermosteel 1L',
+    condition: 'good',
+    yearsUsed: 1,
+    image: 'milton-flask-teal.jpg',
+    description:
+      'Genuine Milton Thermosteel 1-litre flask in teal, bought last winter for office use. Keeps chai hot for roughly 8 hours and water cold through the afternoon. There are two faint scuffs near the base from daily desk use, but the vacuum seal is perfect and the cap threads smoothly with zero leaks.',
+    specs: [
+      { key: 'Capacity', value: '1 litre' },
+      { key: 'Color', value: 'Teal' },
+      { key: 'Insulation', value: 'Double-wall vacuum, hot & cold' },
+    ],
+  },
+  {
+    title: 'iPhone 12 64GB — Blue',
+    category: 'Electronics',
+    seller: 'priya',
+    price: 32000,
+    originalPrice: 79900,
+    brand: 'Apple',
+    model: 'iPhone 12',
+    condition: 'good',
+    yearsUsed: 2,
+    image: 'iphone-12-blue.jpg',
+    description:
+      'iPhone 12 in the blue finish with 64GB storage, boxed with the original cable and paperwork. Battery health is 84% and everything works — Face ID, both cameras, speakers. Always kept in a case so the frame and glass are clean. Selling because my office issued me a work phone.',
+    specs: [
+      { key: 'Storage', value: '64GB' },
+      { key: 'Color', value: 'Blue' },
+      { key: 'Battery Health', value: '84%' },
+      { key: 'Includes', value: 'Box, cable, paperwork' },
+    ],
+  },
+  {
+    title: 'HP Pavilion Gaming Laptop i5',
+    category: 'Electronics',
+    seller: 'arjun',
+    price: 24000,
+    originalPrice: 62000,
+    brand: 'HP',
+    model: 'Pavilion Gaming 15',
+    condition: 'fair',
+    yearsUsed: 3,
+    image: 'hp-pavilion-gaming.jpg',
+    description:
+      'HP Pavilion Gaming 15 with an Intel i5, GTX 1650 graphics, 8GB RAM and a 512GB SSD. Runs GTA V, Valorant and Premiere Pro without complaints. The keyboard backlight works but two keys have shiny legends, and the battery lasts about 90 minutes unplugged — priced accordingly, charger included.',
+    specs: [
+      { key: 'Processor', value: 'Intel Core i5' },
+      { key: 'Graphics', value: 'GTX 1650' },
+      { key: 'RAM / Storage', value: '8GB / 512GB SSD' },
+    ],
+  },
+  {
+    title: 'boAt Rockerz Headphones',
+    category: 'Electronics',
+    seller: 'arjun',
+    price: 1400,
+    originalPrice: 2990,
+    brand: 'boAt',
+    model: 'Rockerz 400',
+    condition: 'like-new',
+    yearsUsed: 0,
+    image: 'boat-rockerz.jpg',
+    description:
+      'boAt Rockerz on-ear Bluetooth headphones in black, bought four months ago and barely used — I switched to wired earphones for the gym. Pairs instantly, cushions are uncreased, battery easily gives the full claimed 8 hours. Comes with the charging cable and the original box.',
+    specs: [
+      { key: 'Type', value: 'On-ear Bluetooth' },
+      { key: 'Battery Life', value: 'Up to 8 hours' },
+      { key: 'Includes', value: 'Charging cable, box' },
+    ],
+  },
+  {
+    title: 'Nike Running Shoes Size 9',
+    category: 'Fashion',
+    seller: 'meera',
+    price: 1800,
+    originalPrice: 5995,
+    brand: 'Nike',
+    model: 'Air Max',
+    condition: 'good',
+    yearsUsed: 1,
+    image: 'nike-running-9.jpg',
+    description:
+      'Nike Air Max running shoes in UK size 9, white with the orange swoosh. Used for morning walks for about a year — the air cushioning still feels springy and the tread has plenty of life. Washed and deodorised. Selling because I bought the wrong size in my next pair and these no longer get worn.',
+    specs: [
+      { key: 'Size', value: 'UK 9' },
+      { key: 'Color', value: 'White / Orange' },
+      { key: 'Use', value: 'Walking, light running' },
+    ],
+  },
+  {
+    title: 'Leather Office Bag',
+    category: 'Fashion',
+    seller: 'priya',
+    price: 1600,
+    originalPrice: 3500,
+    brand: 'Hidesign',
+    model: 'Messenger',
+    condition: 'like-new',
+    yearsUsed: 0,
+    image: 'leather-office-bag.jpg',
+    description:
+      'Full-grain tan leather messenger bag that fits a 15-inch laptop plus files. Bought for a client-facing role I left within a month, so it has been carried maybe six times — the leather is developing a lovely patina and all buckles, straps and the lining are flawless.',
+    specs: [
+      { key: 'Material', value: 'Full-grain leather' },
+      { key: 'Fits', value: '15-inch laptop' },
+      { key: 'Color', value: 'Tan' },
+    ],
+  },
+  {
+    title: 'Study Table Lamp — LED',
+    category: 'Home & Garden',
+    seller: 'meera',
+    price: 450,
+    originalPrice: 1299,
+    brand: 'Philips',
+    model: 'Air 61013',
     condition: 'good',
     yearsUsed: 2,
     image: 'desk-lamp-led.jpg',
     description:
-      'Reading lamp with 21 brightness levels and a USB-A port for charging your phone. Great for late-night work. Priced to move.',
+      'Philips LED study lamp with three colour temperatures and a flexible neck. Perfect working order — bright, flicker-free light that got me through two exam seasons. Selling because my new PG room already has one.',
     specs: [
-      { key: 'Bulb', value: 'LED (included)' },
-      { key: 'Extras', value: 'USB charging port' },
+      { key: 'Light', value: 'LED, 3 colour modes' },
+      { key: 'Power', value: 'Mains, 5W' },
     ],
   },
   {
-    title: 'Ergonomic Office Chair — High-back Mesh',
+    title: 'Wooden Bookshelf — 3 Tier',
     category: 'Home & Garden',
-    seller: 'meera',
-    price: 180,
-    originalPrice: 350,
-    brand: 'HON',
-    model: 'Ignition',
-    condition: 'good',
-    yearsUsed: 2,
-    image: 'office-chair-mesh.jpg',
+    seller: 'arjun',
+    price: 1500,
+    originalPrice: 4500,
+    brand: 'WoodenStreet',
+    model: '3-Tier Shelf',
+    condition: 'fair',
+    yearsUsed: 4,
+    image: 'bookshelf-3tier.jpg',
     description:
-      'High-back mesh office chair with adjustable lumbar support, tilt tension control, and armrests. In very good mechanical shape — all adjustments work smoothly. Selling due to a move to a standing desk.',
+      'Solid-looking white-painted wooden bookshelf with three roomy tiers — held my entire engineering reference shelf plus novels. Structurally rock solid with no wobble, though there are paint chips on two edges and sticker residue on one side. You will need a friend to carry it; I can help load it downstairs.',
     specs: [
-      { key: 'Type', value: 'High-back mesh' },
-      { key: 'Lumbar', value: 'Adjustable' },
+      { key: 'Tiers', value: '3' },
+      { key: 'Finish', value: 'White-painted wood' },
+      { key: 'Assembly', value: 'Comes assembled' },
     ],
   },
   {
-    title: 'Adjustable Dumbbells — Pair (5–24 kg)',
+    title: 'Adjustable Dumbbells Pair 5–20kg',
     category: 'Sports & Outdoors',
     seller: 'priya',
-    price: 240,
-    originalPrice: 399,
-    brand: 'Bowflex',
-    model: 'SelectTech 552',
-    condition: 'like-new',
-    yearsUsed: 1,
+    price: 3500,
+    originalPrice: 8000,
+    brand: 'Kore',
+    model: 'Adjustable 20kg',
+    condition: 'good',
+    yearsUsed: 2,
     image: 'dumbbells-pair.jpg',
     description:
-      'Pair of adjustable dumbbells spanning 5 to 24 kg each — replaces 15 sets of fixed dumbbells. Used for six months, stored on the rack, everything clicks and locks perfectly. Heavy, so local pickup preferred.',
+      'Pair of spin-lock adjustable dumbbells, 5 to 20kg each with plates and collars. Knurling still grippy, no rust, collars tighten properly. My building gym reopened so these are gathering dust — ideal starter set for a home workout corner. Local pickup only, they are heavy.',
     specs: [
-      { key: 'Weight Range', value: '5–24 kg per dumbbell' },
-      { key: 'Includes', value: 'Storage tray' },
+      { key: 'Weight Range', value: '5–20 kg per dumbbell' },
+      { key: 'Type', value: 'Spin-lock adjustable' },
+      { key: 'Pickup', value: 'Local only' },
     ],
   },
   {
-    title: 'Home Office Desk — Scandinavian Oak',
-    category: 'Home & Garden',
-    seller: 'priya',
-    price: 150,
-    originalPrice: 300,
-    brand: 'IKEA',
-    model: 'Alex',
-    condition: 'good',
-    yearsUsed: 3,
-    image: 'office-desk-oak.jpg',
+    title: 'Yoga Mat 6mm',
+    category: 'Sports & Outdoors',
+    seller: 'meera',
+    price: 400,
+    originalPrice: 999,
+    brand: 'Boldfit',
+    model: 'Pro 6mm',
+    condition: 'like-new',
+    yearsUsed: 0,
+    image: 'yoga-mat-6mm.jpg',
     description:
-      '120cm oak-look desk with two drawers and a cable-management tray. Sturdy, no wobble. Some faint ring marks from mugs — cosmetic only. Buyer collects from our apartment building lobby.',
+      'Boldfit 6mm anti-skid yoga mat in grey, used for exactly three home sessions before I joined a studio that provides mats. No tears, no peeling, texture like new — wiped down after every use. Rolls up with its carry strap, which is included.',
     specs: [
-      { key: 'Dimensions', value: '120 x 60 cm' },
-      { key: 'Drawers', value: '2' },
+      { key: 'Thickness', value: '6 mm' },
+      { key: 'Material', value: 'Anti-skid TPE' },
+      { key: 'Includes', value: 'Carry strap' },
     ],
   },
   {
-    title: 'Harry Potter Series — All 7 Paperback Books',
+    title: 'NCERT Physics Class 11 Set',
     category: 'Books & Media',
     seller: 'arjun',
-    price: 45,
-    originalPrice: 90,
-    brand: 'Bloomsbury',
+    price: 350,
+    originalPrice: 1200,
+    brand: 'NCERT',
+    model: 'Class 11 Physics I & II',
     condition: 'good',
-    yearsUsed: 5,
-    image: 'harry-potter-books.jpg',
+    yearsUsed: 2,
+    image: 'ncert-physics-set.jpg',
     description:
-      'Complete seven-book run of the Harry Potter series in paperback. Kept on a shelf, spines unbroken, no underlining or dog-ears. Selling as a set — not splitting.',
+      'Both NCERT Class 11 Physics textbooks, Part 1 and Part 2, latest rationalised syllabus edition. Bindings tight, no missing pages, only light pencil underlining in the first three chapters which erases cleanly. A second full set of notes from my coaching is tucked inside free if you want it.',
     specs: [
-      { key: 'Format', value: 'Paperback' },
-      { key: 'Books', value: '7' },
+      { key: 'Books', value: 'Physics Part 1 + Part 2' },
+      { key: 'Board', value: 'CBSE / NCERT' },
+      { key: 'Extras', value: 'Coaching notes included' },
     ],
   },
   {
-    title: 'Apple Watch SE 44mm — GPS, Silver',
+    title: 'Samsung 32-inch Monitor',
     category: 'Electronics',
-    seller: 'arjun',
-    price: 160,
-    originalPrice: 279,
-    brand: 'Apple',
-    model: 'Watch SE 44mm',
+    seller: 'meera',
+    price: 6200,
+    originalPrice: 12500,
+    brand: 'Samsung',
+    model: 'LF32 1080p',
     condition: 'good',
-    yearsUsed: 1,
-    image: 'apple-watch-se.jpg',
+    yearsUsed: 2,
+    image: 'samsung-monitor-32.jpg',
     description:
-      'Apple Watch SE 44mm GPS in silver with the sport band. Battery still lasts a full day. Screen is clean, no cracks. Includes the magnetic charging cable. Great first smartwatch.',
+      'Samsung 32-inch Full HD monitor — massive upgrade for work-from-home spreadsheets and movie nights. No dead pixels, no backlight bleed, stand and HDMI cable included. The body has one tiny scuff on the rear bezel you never see. Selling only because I am moving abroad next month.',
     specs: [
-      { key: 'Size', value: '44mm' },
-      { key: 'Connectivity', value: 'GPS (no cellular)' },
+      { key: 'Size', value: '32 inch' },
+      { key: 'Resolution', value: '1920 × 1080' },
+      { key: 'Includes', value: 'Stand, HDMI cable' },
     ],
   },
 ];
 
 // ── DEMO DUPLICATE DETECTION LISTINGS ─────────────────────────────────────────
-// These are 7 extra listings that cover fraud-detection cases 2–5.
-// See Task 2 — each description includes one line explaining what it demonstrates.
-// Case 1 (exact pHash duplicate) uses products[0] & products[1] above (iphone-13-midnight.jpg shared).
+// These are extra listings that cover fraud-detection cases 2–5 (see Task 2 —
+// each description includes one line explaining what it demonstrates).
+// Exact-duplicate (Case 1), mirror/rotation and re-photograph scenarios are
+// exercised by backend/scripts/fraud_matrix.js against real images.
 // Cases 2, 3, 4 (image/identity signals) and Case 5 (scam-text pattern signals)
 // are added below. Case 6 (listing-velocity burst) is optional — see
 // BURST_PRODUCTS and the --with-burst flag.
@@ -356,7 +364,7 @@ const DEMO_PRODUCTS = [
     image: 'iphone-13-midnight.jpg',
     imageTransform: 'mirror', // Sharp flop() applied at seed time
     description:
-      '[DEMO CASE 4] Mirror-flipped (horizontally) version of the CASE 1 iPhone image — demonstrates that mirrorPerceptualHash detects the flop() evasion: the stored mirrorHash of Case 1 matches the pHash of this listing.',
+      '[DEMO CASE 4] Mirror-flipped (horizontally) version of the iphone-13-midnight image — demonstrates that mirrorPerceptualHash detects the flop() evasion: the stored mirrorHash of the base image matches the pHash of this listing.',
     specs: [{ key: 'DEMO', value: 'Case 4 — mirror-hash detection' }],
   },
   // CASE 5 — scam-text template: off-platform contact + urgency clichés. The
@@ -469,6 +477,151 @@ const BURST_PRODUCTS = [
 const slugify = (name) =>
   name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * A listing counts as fully worker-processed when the image pipeline has
+ * populated every aiAnalysis layer: CLIP embedding, hashes, histograms,
+ * detections, classification, pricing and the fused risk assessment.
+ */
+const isFullyAnalyzed = (doc) => {
+  const ai = doc?.aiAnalysis || {};
+  return (
+    Array.isArray(doc?.embedding) && doc.embedding.length === 512 &&
+    Array.isArray(ai.imageHashes) && ai.imageHashes.length >= 2 &&
+    Array.isArray(ai.detectedObjects) &&
+    typeof ai.classification?.predictedCategory === 'string' &&
+    ai.classification.predictedCategory.length > 0 &&
+    ai.riskAssessment?.assessedAt != null &&
+    (ai.priceRecommendation?.recommendedPrice || 0) > 0
+  );
+};
+
+/**
+ * Enqueue EVERY given listing through the BullMQ image worker and wait until
+ * aiAnalysis is fully populated. Verifies Redis + ML reachability first and
+ * exits non-zero (STOP) when either is unavailable. Jobs for listings that
+ * are still incomplete after the first pass are requeued once.
+ */
+const enqueueFullWorkerPass = async (listings) => {
+  console.log('\n[Seed] Verifying Redis + ML service reachability...');
+  // The TCP probe runs once per module load and can flake under heavy
+  // parallel load (jest + workers), so re-require (fresh probe) a few times
+  // before concluding Redis is down. Failed probes create no connections.
+  const queuesPath = require.resolve('../src/queues');
+  let queues = null;
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    delete require.cache[queuesPath];
+    queues = require('../src/queues');
+    try {
+      await queues.whenConnected;
+      break;
+    } catch (err) {
+      queues = null;
+      if (attempt === 5) {
+        console.error('[Seed] STOP: Redis unreachable — start Redis before seeding.');
+        process.exit(1);
+      }
+      console.log(`[Seed] Redis probe attempt ${attempt} failed, retrying...`);
+      await sleep(5000);
+    }
+  }
+  const mlBase = process.env.ML_SERVICE_URL || 'http://localhost:8000';
+  try {
+    const res = await fetch(`${mlBase}/health`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    console.log('[Seed] ML service reachable:', mlBase);
+  } catch (err) {
+    console.error(`[Seed] STOP: ML service unreachable at ${mlBase} — ${err.message}`);
+    process.exit(1);
+  }
+
+  const enqueue = async (docs) => {
+    for (const p of docs) {
+      const full = await Product.findById(p._id).lean();
+      await queues.imageProcessingQueue.add('analyze-product', {
+        productId: full._id.toString(),
+        images: (full.images || []).map((img) => ({
+          url: img.url,
+          publicId: img.publicId,
+          hash: img.perceptualHash,
+        })),
+        productData: {
+          title: full.title,
+          description: full.description,
+          price: full.price,
+          originalPrice: full.originalPrice,
+          category: full.category,
+          brand: full.brand,
+          model: full.model,
+          condition: full.condition,
+          yearsUsed: full.yearsUsed,
+          specifications: full.specifications || [],
+          location: full.location || {},
+          seller: full.seller?.toString(),
+        },
+      });
+      console.log(`[Seed] Enqueued worker analysis for "${full.title}"`);
+    }
+  };
+
+  console.log(`\n[Seed] Enqueuing ${listings.length} listings for full worker analysis...`);
+  console.log('[Seed] (requires: npm run worker — start it in another terminal if not running)');
+  await enqueue(listings);
+
+  const ids = listings.map((p) => p._id);
+  const POLL_MS = 15000;
+  const DEADLINE_MS = 20 * 60 * 1000;
+  const deadline = Date.now() + DEADLINE_MS;
+  let requeued = false;
+  for (;;) {
+    await sleep(POLL_MS);
+    const docs = await Product.find({ _id: { $in: ids } }).lean();
+    const pending = docs.filter((d) => !isFullyAnalyzed(d));
+    console.log(`[Seed] Worker progress: ${docs.length - pending.length}/${docs.length} fully analyzed`);
+    if (pending.length === 0) {
+      console.log('[Seed] All listings fully analyzed by the worker.');
+      return;
+    }
+    if (Date.now() >= deadline) {
+      if (!requeued) {
+        console.log(`[Seed] Requeuing ${pending.length} incomplete listing(s) once...`);
+        await enqueue(pending);
+        requeued = true;
+        continue;
+      }
+      console.error('[Seed] STOP: worker did not finish within the time budget. Incomplete:');
+      for (const d of pending) console.error(`  - ${d.title} (${d._id})`);
+      process.exit(1);
+    }
+  }
+};
+
+/**
+ * Per-product verification table: title | auto-category | riskScore |
+ * images OK | crops populated.
+ */
+const printCatalogTable = async (listings) => {
+  const ids = listings.map((p) => p._id);
+  const docs = await Product.find({ _id: { $in: ids } }).lean();
+  console.log('\nTitle                                        | Auto-category        | Risk | Images | Crops');
+  console.log('---------------------------------------------|----------------------|------|--------|------------------');
+  for (const d of docs) {
+    const ai = d.aiAnalysis || {};
+    const crops = Array.isArray(ai.detectedObjects) ? ai.detectedObjects : [];
+    const withEmb = crops.filter((c) => Array.isArray(c.cropEmbedding) && c.cropEmbedding.length > 0).length;
+    const imagesOk = (d.images || []).length > 0 && (ai.imageHashes || []).length >= 2 ? 'OK' : 'MISSING';
+    console.log(
+      `${String(d.title).substring(0, 44).padEnd(44)} | ` +
+      `${String(ai.classification?.predictedCategory || '?').substring(0, 20).padEnd(20)} | ` +
+      `${String(ai.riskAssessment?.riskScore ?? '?').padEnd(4)} | ` +
+      `${imagesOk.padEnd(6)} | ` +
+      `${crops.length} crops (${withEmb} w/ embedding)`
+    );
+  }
+  console.log('');
+};
+
 /**
  * Load a real image from IMAGES_DIR, optionally apply a transform, resize to
  * max 1200px and return the JPEG buffer.
@@ -509,6 +662,7 @@ const buildProductDoc = (tpl, userId, categoryId, imageInfo, hash, mirrorHash, n
     description: tpl.description,
     price: tpl.price,
     originalPrice: tpl.originalPrice || 0,
+    currencyCode: 'INR',
     category: categoryId,
     brand: tpl.brand || '',
     model: tpl.model || '',
@@ -626,7 +780,7 @@ const seed = async () => {
     name: 'Meera Iyer',
     email: 'meera@resell.dev',
     password: PASSWORD,
-    role: 'buyer',
+    role: 'seller',
     location: 'Mumbai',
     isVerified: true,
     averageResponseMinutes: 45,
@@ -682,10 +836,9 @@ const seed = async () => {
     products.push(product);
   }
 
-  const iphone = products[0];
-  const dupListing = products[1]; // Same image as iphone — CASE 1
+  const flask = products[0];
   const priyaProducts = products.filter((p) => p.seller.equals(usersByName.priya._id));
-  console.log(`[Seed] Main products created (${products.length}) — 2 share iphone-13-midnight.jpg (CASE 1)`);
+  console.log(`[Seed] Main products created (${products.length}) — new realistic catalog (INR)`);
 
   // Create DEMO products (cases 2, 3, 4)
   const demoProducts = [];
@@ -761,7 +914,7 @@ const seed = async () => {
       salePrice: price,
       platformFee: Math.round(price * 0.05 * 100) / 100,
       netAmount: Math.round(price * 0.95 * 100) / 100,
-      currencyCode: 'USD',
+      currencyCode: 'INR',
       status: 'completed',
       paymentStatus: 'paid',
       completedAt,
@@ -774,10 +927,10 @@ const seed = async () => {
     {
       seller: priya._id,
       buyer: meera._id,
-      product: iphone._id,
+      product: flask._id,
       sale: sales[0]._id,
       rating: 5,
-      comment: 'Exactly as described — spotless phone, fast to respond, met up the same day. Would buy from Priya again without a second thought.',
+      comment: 'Exactly as described — the flask keeps chai hot till evening, fast to respond, met up the same day. Would buy from Priya again without a second thought.',
     },
     {
       seller: priya._id,
@@ -785,30 +938,30 @@ const seed = async () => {
       product: priyaProducts[1]._id,
       sale: sales[1]._id,
       rating: 4,
-      comment: 'Smooth transaction and the item was in great shape. Took a couple of days to reply to messages, but everything arrived as promised.',
+      comment: 'Smooth transaction and the iPhone was in great shape. Took a couple of days to reply to messages, but everything arrived as promised.',
     },
   ]);
   console.log('[Seed] Reviews created (2 verified reviews for priya)');
 
   const offer1 = await Offer.create({
-    product: iphone._id,
+    product: flask._id,
     buyer: arjun._id,
     seller: priya._id,
-    amount: 650,
-    message: 'Would you take 650 for the iPhone 13?',
+    amount: 480,
+    message: 'Would you take 480 for the Milton flask?',
     status: 'countered',
     expiresAt: new Date(now + 6 * DAY_MS),
     history: [
       { status: 'pending', actor: arjun._id, at: new Date(now - 2 * DAY_MS), note: 'Initial offer' },
-      { status: 'countered', actor: priya._id, at: new Date(now - 1 * DAY_MS), note: 'Countered with 700' },
+      { status: 'countered', actor: priya._id, at: new Date(now - 1 * DAY_MS), note: 'Countered with 500' },
     ],
   });
   const offer2 = await Offer.create({
-    product: iphone._id,
+    product: flask._id,
     buyer: arjun._id,
     seller: priya._id,
-    amount: 700,
-    message: 'I can do 700 if the charger and box are included.',
+    amount: 500,
+    message: 'I can do 500 if you include the original box.',
     status: 'pending',
     parentOffer: offer1._id,
     expiresAt: new Date(now + 6 * DAY_MS),
@@ -816,11 +969,11 @@ const seed = async () => {
       { status: 'pending', actor: priya._id, at: new Date(now - 1 * DAY_MS), note: 'Counter-offer sent' },
     ],
   });
-  console.log('[Seed] Offers created (650 countered → 700 pending)');
+  console.log('[Seed] Offers created (480 countered → 500 pending)');
 
   const convo = await Conversation.create({
     participants: [priya._id, arjun._id],
-    product: iphone._id,
+    product: flask._id,
     lastMessageAt: new Date(now - 2 * 3600 * 1000),
     unreadCounts: new Map([
       [priya._id.toString(), 3],
@@ -828,11 +981,11 @@ const seed = async () => {
     ]),
   });
   const messages = [
-    { sender: 'arjun', body: "Hi Priya! Is the iPhone 13 still available? I'm looking to gift one to my sister.", at: now - 26 * 3600 * 1000 },
-    { sender: 'priya', body: 'Hey Arjun! Yes, it is. Battery health is at 89%, it comes with the original cable and the box.', at: now - 25 * 3600 * 1000 },
-    { sender: 'arjun', body: 'Perfect. Would you consider 650? I can pick it up in person near Indiranagar.', at: now - 20 * 3600 * 1000 },
-    { sender: 'priya', body: "I'd like to stay closer to 700 — it's genuinely pristine and I have another offer at 680.", at: now - 5 * 3600 * 1000 },
-    { sender: 'arjun', body: 'Alright, 700 works for me. What time suits you this weekend to meet up?', at: now - 2 * 3600 * 1000 },
+    { sender: 'arjun', body: "Hi Priya! Is the Milton flask still available? Looking for a 1-litre steel bottle for my gym.", at: now - 26 * 3600 * 1000 },
+    { sender: 'priya', body: 'Hey Arjun! Yes, it is. Vacuum seal is perfect, keeps chai hot for hours, and the cap threads smoothly.', at: now - 25 * 3600 * 1000 },
+    { sender: 'arjun', body: 'Perfect. Would you consider 480? I can pick it up in person near Indiranagar.', at: now - 20 * 3600 * 1000 },
+    { sender: 'priya', body: "I'd like to stay closer to 500 — it's genuinely leak-proof and I have another offer at 490.", at: now - 5 * 3600 * 1000 },
+    { sender: 'arjun', body: 'Alright, 500 works for me. What time suits you this weekend to meet up?', at: now - 2 * 3600 * 1000 },
   ];
   const createdMessages = [];
   for (const m of messages) {
@@ -852,7 +1005,7 @@ const seed = async () => {
 
   // ── Run detectRisk on all demo listings ────────────────────────────────────
   console.log('\n[Seed] Running detectRisk on duplicate-demo listings...');
-  const allDemoAndDup = [dupListing, ...demoProducts, ...burstProducts];
+  const allDemoAndDup = [...demoProducts, ...burstProducts];
   const riskTable = [];
 
   for (const listing of allDemoAndDup) {
@@ -878,9 +1031,7 @@ const seed = async () => {
         },
       }
     );
-    const caseLabel = listing._id.equals(dupListing._id)
-      ? 'CASE 1'
-      : freshDoc.title.match(/CASE (\d)/)?.[0] || '?';
+    const caseLabel = freshDoc.title.match(/CASE (\d)/)?.[0] || '?';
     riskTable.push({
       case: caseLabel,
       title: freshDoc.title.substring(0, 45),
@@ -919,6 +1070,13 @@ const seed = async () => {
     console.log(`${c} | ${t} | ${s} | ${l} | ${row.factors.substring(0, 60)}`);
   }
   console.log('');
+
+  // ── Full worker pass: EVERY listing through the image pipeline ────────────
+  // Redis + ML reachability are verified first — STOP (non-zero exit) if not.
+  await enqueueFullWorkerPass([...products, ...demoProducts, ...burstProducts]);
+
+  // ── Per-product verification table ─────────────────────────────────────────
+  await printCatalogTable([...products, ...demoProducts]);
 
   console.log('\n[Seed] Done! Demo credentials (password for all users):');
   console.log('  ' + PASSWORD);

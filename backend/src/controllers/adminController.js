@@ -5,8 +5,11 @@ const Sale = require('../models/Sale');
 const Review = require('../models/Review');
 const Category = require('../models/Category');
 const Conversation = require('../models/Conversation');
+const Favorite = require('../models/Favorite');
+const Notification = require('../models/Notification');
 const AuditLog = require('../models/AuditLog');
 const AppError = require('../utils/AppError');
+const { deleteFromCloudinary } = require('../config/cloudinary');
 const { notify } = require('../services/notificationService');
 const { setIdentityStatus } = require('../services/identityVerification');
 
@@ -307,6 +310,70 @@ const markIdentityStatus = async (req, res, next) => {
   }
 };
 
+/**
+ * Admin force-delete of ANY listing — the only path by which an admin (or a
+ * seller with an incomplete order, via moderation) can remove a listing that
+ * the owner-facing DELETE /api/products/:id refuses (non-owner, or sold with
+ * an in-flight order). No ownership check and no sold-order guard: admin
+ * action is deliberate and audited. Same cascade cleanup as the seller flow
+ * (Cloudinary assets unreferenced by other live listings, favorites,
+ * notifications) plus an AuditLog entry and the same 'product_status'
+ * Socket.IO broadcast so connected clients update consistently.
+ */
+const forceDeleteProduct = async (req, res, next) => {
+  try {
+    const product = await Product.findById(req.params.id);
+    if (!product) throw new AppError('Product not found', 404, 'NOT_FOUND');
+
+    for (const publicId of product.images.map((img) => img.publicId).filter(Boolean)) {
+      try {
+        // Soft-deleted ('removed') listings are not real references, so the
+        // assets of the listing being removed can be cleaned up; assets
+        // shared with other live listings are never destroyed.
+        const referenced = await Product.exists({
+          'images.publicId': publicId,
+          _id: { $ne: product._id },
+          status: { $ne: 'removed' },
+        });
+        if (!referenced) await deleteFromCloudinary(publicId);
+      } catch (err) {
+        console.error('[Cloudinary] Cleanup failed for', publicId, '-', err.message);
+      }
+    }
+
+    product.status = 'removed';
+    await product.save();
+
+    await Promise.all([
+      Favorite.deleteMany({ product: product._id }),
+      Notification.deleteMany({ 'payload.productId': product._id }),
+      AuditLog.create({
+        actor: req.user._id,
+        action: 'product_deleted',
+        targetType: 'product',
+        target: product._id,
+        metadata: {
+          title: product.title,
+          seller: product.seller,
+          force: true,
+          reason: req.body?.reason || '',
+        },
+        ipAddress: req.ip || '',
+        userAgent: req.get('user-agent') || '',
+      }),
+    ]);
+
+    req.app.get('io')?.emit('product_status', {
+      productId: product._id.toString(),
+      status: 'removed',
+    });
+
+    res.json({ success: true, message: 'Product removed by admin' });
+  } catch (err) {
+    next(err);
+  }
+};
+
 const getAnalytics = async (req, res, next) => {
   try {
     const last30Days = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
@@ -412,6 +479,7 @@ module.exports = {
   deleteUser,
   getAllProducts,
   moderateProduct,
+  forceDeleteProduct,
   markIdentityStatus,
   getAnalytics,
 };

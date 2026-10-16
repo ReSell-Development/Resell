@@ -315,7 +315,11 @@ const detectObjects = async (imageBuffer) => {
       .raw()
       .toBuffer({ resolveWithObject: true });
 
-    tensor = tf.tensor3d(new Float32Array(data), [detH, detW, 3], 'float32');
+    // COCO-SSD's detect() executes the graph with an int32 image tensor —
+    // a float32 tensor throws ("must be int32, but was float32") and kills
+    // all object detection. Sharp raw output is Uint8, so build int32
+    // directly with no precision to lose.
+    tensor = tf.tensor3d(data, [detH, detW, 3], 'int32');
     const predictions = await d.detect(tensor);
 
     const objects = (Array.isArray(predictions) ? predictions : [])
@@ -416,10 +420,10 @@ const embedBuffer = async (buffer) => {
  * MobileNet classification + CNN embedding.
  *
  * Returns { objects: [{ bbox, label, score, cropClassification,
- * cropConfidence, cropEmbedding }] } — objects is empty (not an error) when
- * nothing was detected or detection failed, in which case callers use the
- * whole-image analysis fallback exactly as today. Never throws and never
- * blocks listing creation.
+ * cropConfidence, cropEmbedding, clipCropEmbedding, colorHistogram }] }
+ * — objects is empty (not an error) when nothing was detected or detection
+ * failed, in which case callers use the whole-image analysis fallback
+ * exactly as today. Never throws and never blocks listing creation.
  */
 const analyzeDetectedObjects = async (imageBuffer, metadata = {}) => {
   try {
@@ -428,13 +432,15 @@ const analyzeDetectedObjects = async (imageBuffer, metadata = {}) => {
       return { objects: [], imageWidth: detection.imageWidth || 0, imageHeight: detection.imageHeight || 0 };
     }
 
+    const { extractHsvHistogram } = require('./imageUtils');
     const objects = [];
     for (const det of detection.objects) {
       const crop = await cropDetection(imageBuffer, det.bbox);
       if (!crop) continue;
-      const [classification, cropEmbedding] = await Promise.all([
+      const [classification, cropEmbedding, colorHistogram] = await Promise.all([
         classifyImage(crop, metadata),
         embedBuffer(crop),
+        extractHsvHistogram(crop),
       ]);
       objects.push({
         bbox: { x: det.bbox[0], y: det.bbox[1], width: det.bbox[2], height: det.bbox[3] },
@@ -443,6 +449,8 @@ const analyzeDetectedObjects = async (imageBuffer, metadata = {}) => {
         cropClassification: classification?.category || 'Other',
         cropConfidence: typeof classification?.confidence === 'number' ? classification.confidence : 0,
         cropEmbedding: Array.isArray(cropEmbedding) ? cropEmbedding : [],
+        clipCropEmbedding: [],
+        colorHistogram: Array.isArray(colorHistogram) ? colorHistogram : [],
       });
     }
 

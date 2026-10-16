@@ -551,7 +551,7 @@ Thresholds (configurable via env vars):
 
 `buildProductFingerprint()` can append a primary-object crop embedding when the caller supplies `aiAnalysis.detectedObjects`. The production `assessVisualSimilarity()` queries currently select only `images.cnnFeatures`, however, so they do not load those crop embeddings; the live cross-listing scan compares the stored whole-image vectors. Different-length vectors are skipped. The signal is supporting evidence, not proof that two listings are the same physical item.
 
-> **Important design decision:** Visual similarity alone is **never proof of fraud**. Two sellers may legitimately own the same model (e.g., iPhone 15 Pro). The visual fingerprint is always a *supporting signal* combined with other evidence. It can never push a listing to high risk by itself.
+> **Important design decision:** Visual similarity alone is **never proof of fraud**. Two sellers may legitimately own the same model (e.g., iPhone 15 Pro). The visual fingerprint is always a *supporting signal* combined with other evidence. It can never push a listing to high risk by itself. Cross-seller matches surface as buyer advisories: the listing carries a `buyerAdvisory` line ("Visually similar to another active listing — we recommend verifying details with the seller before paying") rendered on the ProductDetail Trust panel, and a very strong match (≥ 0.97) combined with ≥ 2 other risk signals escalates an otherwise-low listing to medium so it appears in the admin flagged queue — neither listing is ever auto-rejected by this path.
 
 ### 7.5 Computer Vision — Damage & Condition Scoring
 

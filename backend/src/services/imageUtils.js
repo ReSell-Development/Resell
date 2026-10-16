@@ -156,6 +156,55 @@ const extractColorHistogram = async (buffer) => {
 };
 
 /**
+ * 48-bin HSV histogram (16 hue + 16 saturation + 16 value), L1-normalised.
+ * Used as the second modality for object-centric same-seller matching so
+ * background pixels never dominate the colour signature.
+ */
+const extractHsvHistogram = async (buffer) => {
+  try {
+    let sharp;
+    try {
+      sharp = require('sharp');
+    } catch {
+      sharp = null;
+    }
+    if (!sharp) return new Array(48).fill(0);
+
+    const { data } = await sharp(buffer)
+      .resize(64, 64, { fit: 'fill' })
+      .removeAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+
+    const histogram = new Array(48).fill(0);
+    for (let i = 0; i < data.length; i += 3) {
+      const r = data[i] / 255;
+      const g = data[i + 1] / 255;
+      const b = data[i + 2] / 255;
+      const max = Math.max(r, g, b);
+      const min = Math.min(r, g, b);
+      const d = max - min;
+      let h = 0;
+      if (d !== 0) {
+        if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+        else if (max === g) h = ((b - r) / d + 2) / 6;
+        else h = ((r - g) / d + 4) / 6;
+      }
+      const s = max === 0 ? 0 : d / max;
+      const v = max;
+      histogram[Math.min(15, Math.floor(h * 16))] += 1;
+      histogram[16 + Math.min(15, Math.floor(s * 16))] += 1;
+      histogram[32 + Math.min(15, Math.floor(v * 16))] += 1;
+    }
+    const total = data.length / 3;
+    return histogram.map((bin) => bin / total);
+  } catch (error) {
+    console.error('[ImageUtils] HSV histogram extraction failed:', error.message);
+    return new Array(48).fill(0);
+  }
+};
+
+/**
  * Compress image buffer
  * @param {Buffer} buffer - Image buffer
  * @param {Object} options - Compression options
@@ -193,5 +242,6 @@ module.exports = {
   validateImageBuffer,
   getImageDimensions,
   extractColorHistogram,
+  extractHsvHistogram,
   compressImage,
 };

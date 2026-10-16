@@ -27,6 +27,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { formatDate, getConditionLabel, getConditionColor, cn } from '../utils/format';
 import ImageGallery from '../components/product/ImageGallery';
 import AIAnalysisPanel from '../components/product/AIAnalysisPanel';
+import VisualSimilarityAdvisory from '../components/product/VisualSimilarityAdvisory';
 import SellerInfo from '../components/product/SellerInfo';
 import ProductCard from '../components/product/ProductCard';
 import DeliveryAddressForm from '../components/checkout/DeliveryAddressForm';
@@ -679,6 +680,10 @@ export default function ProductDetail() {
                       <Check className="w-4 h-4 text-emerald-500 flex-shrink-0" />
                       <span className="text-slate-700">Reviews are written only by verified purchasers</span>
                     </li>
+                    {/* Cross-seller visual supporting signal: buyer advisory
+                        in evidence phrasing (never "fraud"/"duplicate").
+                        Shown only when the backend reports it. */}
+                    <VisualSimilarityAdvisory advisory={product.buyerAdvisory} />
                   </ul>
                 </div>
               </ScrollReveal>

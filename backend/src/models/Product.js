@@ -82,6 +82,12 @@ const productSchema = new mongoose.Schema(
     embedding: { type: [Number], default: [] },
     fraudScore: { type: Number, default: 0, min: 0, max: 100 },
     fraudReasons: [{ type: String }],
+    // Buyer-facing advisory shown on the ProductDetail Trust panel when a
+    // cross-seller visual supporting signal fires. Evidence phrasing only —
+    // never "fraud"/"duplicate". Empty string = no advisory. Deliberately a
+    // top-level field (not inside aiAnalysis.riskAssessment) so it survives
+    // the non-owner stripping in getProduct and stays visible to buyers.
+    buyerAdvisory: { type: String, default: '' },
     suggestedPrice: { type: Number, default: 0 },
     priceRange: {
       min: { type: Number, default: 0 },
@@ -167,6 +173,12 @@ const productSchema = new mongoose.Schema(
           cropClassification: { type: String, default: 'Other' },
           cropConfidence: { type: Number, default: 0, min: 0, max: 1 },
           cropEmbedding: { type: [Number], default: [] },
+          // Optional CLIP embedding of the same crop (512-D). Compared
+          // crop-vs-crop with cropEmbedding via max() — never averaged
+          // with the whole-image vector.
+          clipCropEmbedding: { type: [Number], default: [] },
+          // 48-bin HSV histogram of the crop (16H+16S+16V).
+          colorHistogram: { type: [Number], default: [] },
         },
       ],
       // Cover-image pixel dimensions the detectedObjects bboxes refer to

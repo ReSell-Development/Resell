@@ -7,6 +7,7 @@ const {
   deleteUser,
   getAllProducts,
   moderateProduct,
+  forceDeleteProduct,
   markIdentityStatus,
   getAnalytics,
 } = require('../controllers/adminController');
@@ -30,6 +31,11 @@ router.delete('/users/:id', deleteUser);
 
 router.get('/products', getAllProducts);
 router.put('/products/:id', moderateProductValidation, moderateProduct);
+// Admin force-delete — the ONLY admin path for removing a listing. The
+// owner-facing DELETE /api/products/:id stays owner-only (admins get 403
+// there) and refuses sold listings with in-flight orders (409); this route
+// bypasses both guards deliberately and every call is audit-logged.
+router.delete('/products/:id', forceDeleteProduct);
 
 // Product identity registry (stolen/flagged status) — admin/moderator only
 router.put('/identities/:id/status', markIdentityStatusValidation, markIdentityStatus);

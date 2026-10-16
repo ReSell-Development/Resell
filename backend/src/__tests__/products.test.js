@@ -4,6 +4,10 @@ const { app, server } = require('../server');
 const User = require('../models/User');
 const Category = require('../models/Category');
 const Product = require('../models/Product');
+const Sale = require('../models/Sale');
+const Favorite = require('../models/Favorite');
+const Notification = require('../models/Notification');
+const AuditLog = require('../models/AuditLog');
 
 const extractToken = (res) => {
   const setCookie = res.headers['set-cookie'] || [];
@@ -336,6 +340,145 @@ describe('Product Routes', () => {
         .expect(200);
 
       expect(res.body.success).toBe(true);
+    });
+
+    it('owner delete marks the listing removed and hides it from the marketplace', async () => {
+      await request(app)
+        .delete(`/api/products/${productId}`)
+        .set('Authorization', `Bearer ${sellerToken}`)
+        .expect(200);
+
+      const stored = await Product.findById(productId);
+      expect(stored.status).toBe('removed');
+
+      const market = await request(app).get('/api/products').expect(200);
+      expect(market.body.items.map((p) => p._id)).not.toContain(productId);
+    });
+
+    it('should reject delete by non-owner (403)', async () => {
+      const otherSeller = await User.create({
+        name: 'Other Seller',
+        email: `other-${Date.now()}@example.com`,
+        password: 'password123',
+        role: 'seller',
+      });
+      const otherTokenRes = await request(app)
+        .post('/api/auth/login')
+        .send({ email: otherSeller.email, password: 'password123' });
+
+      const res = await request(app)
+        .delete(`/api/products/${productId}`)
+        .set('Authorization', `Bearer ${extractToken(otherTokenRes)}`)
+        .expect(403);
+
+      expect(res.body.code).toBe('FORBIDDEN');
+      expect((await Product.findById(productId)).status).not.toBe('removed');
+    });
+
+    it('should reject admin on the seller route — admins use DELETE /api/admin/products/:id (403)', async () => {
+      const res = await request(app)
+        .delete(`/api/products/${productId}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(403);
+
+      expect(res.body.code).toBe('FORBIDDEN');
+      expect((await Product.findById(productId)).status).not.toBe('removed');
+    });
+
+    it('should block delete of a sold product with an incomplete order (409)', async () => {
+      const buyer = await User.create({
+        name: 'Order Buyer',
+        email: `order-buyer-${Date.now()}@example.com`,
+        password: 'password123',
+        role: 'buyer',
+      });
+      await Product.findByIdAndUpdate(productId, { status: 'sold' });
+      await Sale.create({
+        product: productId,
+        seller: sellerId,
+        buyer: buyer._id,
+        salePrice: 100,
+        netAmount: 95,
+        status: 'paid',
+      });
+
+      const res = await request(app)
+        .delete(`/api/products/${productId}`)
+        .set('Authorization', `Bearer ${sellerToken}`)
+        .expect(409);
+
+      expect(res.body.code).toBe('ORDER_INCOMPLETE');
+      expect(res.body.message).toMatch(/Complete the order first/);
+      expect((await Product.findById(productId)).status).toBe('sold');
+    });
+
+    it('should allow delete of a sold product once the order is complete (200)', async () => {
+      const buyer = await User.create({
+        name: 'Done Buyer',
+        email: `done-buyer-${Date.now()}@example.com`,
+        password: 'password123',
+        role: 'buyer',
+      });
+      await Product.findByIdAndUpdate(productId, { status: 'sold' });
+      await Sale.create({
+        product: productId,
+        seller: sellerId,
+        buyer: buyer._id,
+        salePrice: 100,
+        netAmount: 95,
+        status: 'completed',
+      });
+
+      await request(app)
+        .delete(`/api/products/${productId}`)
+        .set('Authorization', `Bearer ${sellerToken}`)
+        .expect(200);
+
+      expect((await Product.findById(productId)).status).toBe('removed');
+    });
+
+    it('should cascade favorites + notifications and write an AuditLog entry', async () => {
+      const buyer = await User.create({
+        name: 'Fan Buyer',
+        email: `fan-${Date.now()}@example.com`,
+        password: 'password123',
+        role: 'buyer',
+      });
+      await Favorite.create({ user: buyer._id, product: productId });
+      await Notification.create({
+        recipient: buyer._id,
+        type: 'order',
+        payload: { productId },
+      });
+
+      await request(app)
+        .delete(`/api/products/${productId}`)
+        .set('Authorization', `Bearer ${sellerToken}`)
+        .expect(200);
+
+      expect(await Favorite.countDocuments({ product: productId })).toBe(0);
+      expect(await Notification.countDocuments({ 'payload.productId': productId })).toBe(0);
+
+      const audit = await AuditLog.findOne({ action: 'product_deleted', target: productId });
+      expect(audit).not.toBeNull();
+      expect(audit.actor.toString()).toBe(sellerId.toString());
+      expect(audit.metadata.title).toBe('Product to Delete');
+    });
+
+    it("should broadcast 'product_status' with status 'removed'", async () => {
+      const io = app.get('io');
+      const spy = jest.spyOn(io, 'emit');
+
+      await request(app)
+        .delete(`/api/products/${productId}`)
+        .set('Authorization', `Bearer ${sellerToken}`)
+        .expect(200);
+
+      expect(spy).toHaveBeenCalledWith('product_status', {
+        productId,
+        status: 'removed',
+      });
+      spy.mockRestore();
     });
   });
 

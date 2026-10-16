@@ -22,6 +22,19 @@ const SOURCES = [
   { filename: "iphone-demo-case2.jpg", url: "https://images.unsplash.com/photo-1592899677977-9c10ca588bbd?w=1200&q=80&fm=jpg&fit=crop", credit: "Photo by Tran Mau Tri Tam on Unsplash" },
   { filename: "sneakers-demo-case3a.jpg", url: "https://images.unsplash.com/photo-1460353581641-37baddab0fa2?w=1200&q=80&fm=jpg&fit=crop", credit: "Photo by Jakob Owens on Unsplash" },
   { filename: "sneakers-demo-case3b.jpg", url: "https://images.unsplash.com/photo-1491553895911-0055eca6402d?w=1200&q=80&fm=jpg&fit=crop", credit: "Photo by Alexander Schimmeck on Unsplash" },
+  // ── New realistic catalog (Task 2) + fraud-matrix extras ──────────────
+  { filename: "milton-flask-teal.jpg", url: "https://images.unsplash.com/photo-1602143407151-7111542de6e8?w=1200&q=80&fm=jpg&fit=crop", credit: "Unsplash photo-1602143407151-7111542de6e8, freely usable under Unsplash License" },
+  { filename: "bottle-teal-alt.jpg", url: "https://images.unsplash.com/photo-1610824352934-c10d87b700cc?w=1200&q=80&fm=jpg&fit=crop", credit: "Unsplash photo-1610824352934-c10d87b700cc, freely usable under Unsplash License" },
+  { filename: "iphone-12-blue.jpg", url: "https://images.unsplash.com/photo-1603921326210-6edd2d60ca68?w=1200&q=80&fm=jpg&fit=crop", credit: "Unsplash photo-1603921326210-6edd2d60ca68, freely usable under Unsplash License" },
+  { filename: "hp-pavilion-gaming.jpg", url: "https://images.unsplash.com/photo-1603302576837-37561b2e2302?w=1200&q=80&fm=jpg&fit=crop", credit: "Unsplash photo-1603302576837-37561b2e2302, freely usable under Unsplash License" },
+  { filename: "boat-rockerz.jpg", url: "https://images.unsplash.com/photo-1583394838336-acd977736f90?w=1200&q=80&fm=jpg&fit=crop", credit: "Unsplash photo-1583394838336-acd977736f90, freely usable under Unsplash License" },
+  { filename: "nike-running-9.jpg", url: "https://images.unsplash.com/photo-1600185365483-26d7a4cc7519?w=1200&q=80&fm=jpg&fit=crop", credit: "Unsplash photo-1600185365483-26d7a4cc7519, freely usable under Unsplash License" },
+  { filename: "leather-office-bag.jpg", url: "https://images.unsplash.com/photo-1473188588951-666fce8e7c68?w=1200&q=80&fm=jpg&fit=crop", credit: "Unsplash photo-1473188588951-666fce8e7c68, freely usable under Unsplash License" },
+  { filename: "bookshelf-3tier.jpg", url: "https://images.unsplash.com/photo-1524578271613-d550eacf6090?w=1200&q=80&fm=jpg&fit=crop", credit: "Unsplash photo-1524578271613-d550eacf6090, freely usable under Unsplash License" },
+  { filename: "yoga-mat-6mm.jpg", url: "https://images.unsplash.com/photo-1592432678016-e910b452f9a2?w=1200&q=80&fm=jpg&fit=crop", credit: "Unsplash photo-1592432678016-e910b452f9a2, freely usable under Unsplash License" },
+  { filename: "ncert-physics-set.jpg", url: "https://images.unsplash.com/photo-1497633762265-9d179a990aa6?w=1200&q=80&fm=jpg&fit=crop", credit: "Unsplash photo-1497633762265-9d179a990aa6, freely usable under Unsplash License" },
+  { filename: "samsung-monitor-32.jpg", url: "https://images.unsplash.com/photo-1585792180666-f7347c490ee2?w=1200&q=80&fm=jpg&fit=crop", credit: "Unsplash photo-1585792180666-f7347c490ee2, freely usable under Unsplash License" },
+  { filename: "dumbbells-alt.jpg", url: "https://images.unsplash.com/photo-1534438327276-14e5300c3a48?w=1200&q=80&fm=jpg&fit=crop", credit: "Unsplash photo-1534438327276-14e5300c3a48, freely usable under Unsplash License" },
 ];
 
 const downloadUrl = (url) =>

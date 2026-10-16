@@ -1,4 +1,7 @@
 const { Worker } = require('bullmq');
+const mongoose = require('mongoose');
+const dotenv = require('dotenv');
+const connectDB = require('../config/db');
 const queues = require('../queues');
 const Product = require('../models/Product');
 const Category = require('../models/Category');
@@ -20,6 +23,12 @@ const {
 const { cosineSimilarity } = require('../services/textSimilarity');
 
 (async () => {
+  // The worker is a standalone process (no server.js) — load env and connect
+  // to MongoDB itself. Without this every Product query buffers until the
+  // 10s Mongoose timeout and all jobs fail. Exit non-zero when either Redis
+  // or MongoDB is unavailable so the restart policy retries.
+  if (process.env.NODE_ENV !== 'test') dotenv.config();
+  await connectDB();
   // The queue module resolves its shared Redis connection asynchronously —
   // wait for it before constructing the BullMQ Worker. Exit non-zero when
   // Redis is unavailable so the container restart policy retries.
@@ -507,6 +516,15 @@ const { cosineSimilarity } = require('../services/textSimilarity');
                 productId,
                 ...visual,
                 category: 'possible_duplicate_image',
+              });
+              // Cross-seller buyer advisory (Trust panel, evidence phrasing)
+              // plus medium-escalation into the admin flagged queue when a
+              // very strong match coincides with >= 2 other signals. Status
+              // is never touched — neither listing is auto-rejected here.
+              const { applyCrossSellerVisualOutcome } = require('../services/visualAdvisory');
+              await applyCrossSellerVisualOutcome({
+                productId,
+                similarity: visual.similarity,
               });
             }
 

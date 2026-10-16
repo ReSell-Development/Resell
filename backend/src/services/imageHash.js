@@ -25,6 +25,14 @@ const BLOCK_SIZE = 8;
 
 const DCT_SIZE = 32;
 
+// A valid 64-bit DCT pHash is exactly 16 lowercase hex characters. When Sharp
+// is unavailable the hasher cannot produce a perceptual hash at all; it emits
+// a SHA-256 digest tagged with this prefix so the two value spaces are never
+// compared against each other.
+const PHASH_HEX_LENGTH = 16;
+const SHA256_PREFIX = 'sha256:';
+const PHASH_HEX_RE = /^[0-9a-f]{16}$/;
+
 // Precomputed cosine table: COS_TABLE[x][u] = cos((2x+1)·u·π / (2·N)).
 // Avoids recomputing ~65k Math.cos calls for every 32×32 DCT.
 const COS_TABLE = (() => {
@@ -110,21 +118,57 @@ const perceptualHashFromBuffer = async (imageBuffer) => {
       return hash;
     }
 
-    return crypto.createHash('sha256').update(imageBuffer).digest('hex').slice(0, 16);
+    // Sharp unavailable: this is NOT a perceptual hash. Tag it so the
+    // duplicate pipeline can tell the two hash types apart instead of
+    // comparing a SHA-256 digest as if it were DCT pHash (the SCRUM-32
+    // length-only guard used to rely on the value being 16 hex chars, which
+    // a truncated digest also satisfies — a genuine hash-type mismatch).
+    return SHA256_PREFIX + crypto.createHash('sha256').update(imageBuffer).digest('hex');
   } catch (err) {
-    return crypto.createHash('sha256').update(imageBuffer).digest('hex').slice(0, 16);
+    return SHA256_PREFIX + crypto.createHash('sha256').update(imageBuffer).digest('hex');
   }
 };
 
-// A valid 64-bit pHash is 16 hex characters. sha256 fallback entries (64
-// hex chars, written when sharp is unavailable) may also live in the
-// stored flat hash lists — hamming distance over those is meaningless.
-const PHASH_HEX_LENGTH = 16;
+/**
+ * Classify a stored hash value.
+ *   'pHash'  — a valid 64-bit DCT perceptual hash (16 lowercase hex chars)
+ *   'sha256' — a tagged SHA-256 fallback digest (Sharp unavailable)
+ *   'empty'  — missing / null / non-string
+ *   'other'  — anything else (legacy untagged digests, garbage)
+ *
+ * hammingDistance() only ever has meaning for 'pHash' values, so callers
+ * must gate on this before comparing.
+ */
+const hashKind = (value) => {
+  if (typeof value !== 'string' || value.length === 0) return 'empty';
+  if (value.startsWith(SHA256_PREFIX)) return 'sha256';
+  if (PHASH_HEX_RE.test(value)) return 'pHash';
+  return 'other';
+};
+
+const isPHash = (value) => hashKind(value) === 'pHash';
+
+/**
+ * 16 LSH nibble buckets for a 64-bit hex pHash: one bucket per nibble
+ * position ("<index>:<nibble>"). Two hashes within hamming distance <= 15
+ * are guaranteed to share at least one bucket (pigeonhole: 16 nibbles,
+ * <= 15 differing bits must leave one nibble identical), so a bucket query
+ * is a complete prefilter for the HASH_SIMILARITY_THRESHOLD=12 band and then
+ * some. Non-pHash values yield no buckets (excluded from retrieval).
+ */
+const hashBuckets = (value) => {
+  if (!isPHash(value)) return [];
+  const buckets = [];
+  for (let i = 0; i < value.length; i++) {
+    buckets.push(`${i}:${value[i]}`);
+  }
+  return buckets;
+};
 
 const hammingDistance = (hash1, hash2) => {
   // Missing operand: maximally distant (never matches) — pinned contract.
   if (!hash1 || !hash2) return 64;
-  // SCRUM-32: non-pHash entries (e.g. sha256 fallback slices) and any
+  // SCRUM-32: non-pHash entries (e.g. sha256 fallback entries) and any
   // pair of differing length are excluded from hamming math. Returns
   // null so probe sites can skip the pair instead of comparing garbage.
   if (hash1.length !== PHASH_HEX_LENGTH || hash2.length !== PHASH_HEX_LENGTH) return null;
@@ -261,4 +305,9 @@ module.exports = {
   orientationHashesFromBuffer,
   hammingDistance,
   similarity,
+  hashKind,
+  isPHash,
+  hashBuckets,
+  SHA256_PREFIX,
+  PHASH_HEX_LENGTH,
 };
