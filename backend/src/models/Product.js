@@ -202,6 +202,26 @@ const productSchema = new mongoose.Schema(
       // in aiAnalysis; the fraud engine compares the full hash set.
       rotationHashes: [{ type: String }],
       vflipHash: [{ type: String }],
+      // SCRUM-30: typed variant list. imageHashes is a flat list mixing normal
+      // and mirror entries with no way to tell them apart; hashVariants keeps
+      // the per-image (plain / mirror / r90..r270 / vflip) pairing so the
+      // duplicate pipeline can classify a match's transformation relationship.
+      hashVariants: [
+        {
+          transform: {
+            type: String,
+            enum: ['plain', 'mirror', 'r90', 'r180', 'r270', 'vflip'],
+            default: 'plain',
+          },
+          value: { type: String, default: '' },
+        },
+      ],
+      // SCRUM-30: LSH nibble buckets ("<nibble-index>:<hex-char>") over every
+      // pHash in this listing's hash set. Two hashes within hamming distance <=
+      // 15 are guaranteed to share a bucket, so the indexed $in query on this
+      // array is a complete prefilter for the REVIEW band and beyond — replacing
+      // the bounded brute-force candidate scan.
+      hashBuckets: [{ type: String }],
       // SCRUM-31: true when any stored hash came from the client echo rather
       // than a server-side upload record (legacy images) — the fraud engine
       // can weight unverified hashes accordingly.
@@ -209,6 +229,45 @@ const productSchema = new mongoose.Schema(
       duplicateMatch: {
         productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', default: null },
         similarity: { type: Number, default: 0 },
+      },
+      // SCRUM-30: graded duplicate assessment from the duplicate pipeline.
+      // imageCopyScore and physicalItemScore are deliberately separate (was a
+      // single pHash distance): the first answers "was this photo copied?",
+      // the second "is this the same physical item?". Only image-copy evidence
+      // can produce decision 'BLOCK' on its own; visual similarity alone is
+      // capped at 'REVIEW' (never block solely on looks).
+      duplicateAssessment: {
+        decision: {
+          type: String,
+          enum: ['ALLOW', 'REVIEW', 'BLOCK'],
+          default: 'ALLOW',
+        },
+        imageCopyScore: { type: Number, default: 0, min: 0, max: 1 },
+        physicalItemScore: { type: Number, default: 0, min: 0, max: 1 },
+        corroborated: { type: Boolean, default: false },
+        evidence: {
+          sameSeller: { type: Boolean, default: false },
+          sameCategory: { type: Boolean, default: false },
+          sameDescription: { type: Boolean, default: false },
+          identityOrProvenance: { type: Boolean, default: false },
+          repeatRelist: { type: Boolean, default: false },
+          sameModel: { type: Boolean, default: false },
+        },
+        // Best image-copy match (perceptual-hash) and best physical-item match
+        // (object-centric CNN), kept apart for the same reason as the scores.
+        imageCopy: {
+          productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', default: null },
+          title: { type: String, default: '' },
+          distance: { type: Number, default: null },
+          relationship: { type: String, default: 'identical' },
+        },
+        physicalItem: {
+          productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', default: null },
+          title: { type: String, default: '' },
+          similarity: { type: Number, default: null },
+        },
+        reasons: [{ type: String }],
+        assessedAt: { type: Date, default: null },
       },
       priceRecommendation: {
         recommendedPrice: { type: Number, default: 0 },
@@ -272,6 +331,10 @@ productSchema.index({ 'duplicateInfo.isDuplicate': 1, status: 1 });
 productSchema.index({ 'duplicateInfo.duplicateOf': 1 });
 productSchema.index({ 'images.perceptualHash': 1, status: 1 });
 productSchema.index({ 'images.cnnFeatures': 1 }); // For future vector search
+// SCRUM-30: LSH nibble-bucket index backing the duplicate pipeline's indexed
+// candidate retrieval (retrieveDuplicateCandidates). Multikey on the 16-bucket
+// array, so a probe's bucket list is answered by a single index lookup.
+productSchema.index({ 'aiAnalysis.hashBuckets': 1 });
 
 // Compound indexes for common queries
 productSchema.index({ category: 1, price: 1, status: 1 });

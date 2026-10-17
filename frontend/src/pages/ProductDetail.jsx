@@ -49,6 +49,7 @@ export default function ProductDetail() {
   const [favorited, setFavorited] = useState(false);
   const [reviewData, setReviewData] = useState({ reviews: [], summary: { count: 0, average: 0 }, canReview: { allowed: false, reason: 'login_required' } });
   const [loading, setLoading] = useState(true);
+  const [removed, setRemoved] = useState(false);
   const [showReport, setShowReport] = useState(false);
   const [showAddressModal, setShowAddressModal] = useState(false);
   const [showOfferModal, setShowOfferModal] = useState(false);
@@ -60,10 +61,16 @@ export default function ProductDetail() {
 
   useEffect(() => {
     setLoading(true);
+    setRemoved(false);
     productService
       .get(id)
       .then((r) => setProduct(r.data.product))
-      .catch(() => setProduct(null))
+      .catch((err) => {
+        setProduct(null);
+        // A soft-deleted listing is a 404 with the PRODUCT_REMOVED code — show
+        // the friendly "removed" state rather than a generic error.
+        if (err?.response?.status === 404) setRemoved(true);
+      })
       .finally(() => setLoading(false));
 
     productService.similar(id).then((r) => setSimilar(r.data.items)).catch(() => {});
@@ -276,6 +283,14 @@ export default function ProductDetail() {
   };
 
   if (loading) return <Loader />;
+  if (removed) {
+    return (
+      <ErrorState
+        title="This listing has been removed"
+        description="The seller or a moderator removed this listing, so it is no longer available. Browse the marketplace for similar items."
+      />
+    );
+  }
   if (!product) return <ErrorState title="Product not found" />;
 
   return (

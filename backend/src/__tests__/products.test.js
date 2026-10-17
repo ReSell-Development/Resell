@@ -463,6 +463,97 @@ describe('Product Routes', () => {
       expect(audit).not.toBeNull();
       expect(audit.actor.toString()).toBe(sellerId.toString());
       expect(audit.metadata.title).toBe('Product to Delete');
+      expect(audit.metadata.byRole).toBe('seller');
+    });
+
+    it('lets an admin force-delete ANY listing via ?force=true (200, audited as admin)', async () => {
+      const product = await Product.create({
+        title: "Someone Else's Listing",
+        description: 'Owned by the seller above, not the admin',
+        price: 250,
+        category: categoryId,
+        images: [{ url: 'https://example.com/admin-del.jpg', publicId: 'admin-del-1' }],
+        seller: sellerId,
+        status: 'active',
+      });
+
+      await request(app)
+        .delete(`/api/products/${product._id}`)
+        .query({ force: 'true' })
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+
+      expect((await Product.findById(product._id)).status).toBe('removed');
+
+      const audit = await AuditLog.findOne({ action: 'product_deleted', target: product._id });
+      expect(audit).not.toBeNull();
+      expect(audit.metadata.byRole).toBe('admin');
+      expect(audit.metadata.force).toBe(true);
+    });
+
+    it('lets an admin force-delete a sold listing with an in-flight order (?force=true)', async () => {
+      const buyer = await User.create({
+        name: 'Force Buyer',
+        email: `force-buyer-${Date.now()}@example.com`,
+        password: 'password123',
+        role: 'buyer',
+      });
+      await Product.findByIdAndUpdate(productId, { status: 'sold' });
+      await Sale.create({
+        product: productId,
+        seller: sellerId,
+        buyer: buyer._id,
+        salePrice: 100,
+        netAmount: 95,
+        status: 'paid',
+      });
+
+      await request(app)
+        .delete(`/api/products/${productId}`)
+        .query({ force: 'true' })
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+
+      expect((await Product.findById(productId)).status).toBe('removed');
+    });
+
+    it('does not let an admin bypass the sold-order guard without ?force=true (409)', async () => {
+      const buyer = await User.create({
+        name: 'NoForce Buyer',
+        email: `noforce-buyer-${Date.now()}@example.com`,
+        password: 'password123',
+        role: 'buyer',
+      });
+      await Product.findByIdAndUpdate(productId, { status: 'sold' });
+      await Sale.create({
+        product: productId,
+        seller: sellerId,
+        buyer: buyer._id,
+        salePrice: 100,
+        netAmount: 95,
+        status: 'paid',
+      });
+
+      const res = await request(app)
+        .delete(`/api/products/${productId}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(403);
+
+      expect(res.body.code).toBe('FORBIDDEN');
+      expect((await Product.findById(productId)).status).toBe('sold');
+    });
+
+    it('returns a PRODUCT_REMOVED 404 for a deleted listing', async () => {
+      await request(app)
+        .delete(`/api/products/${productId}`)
+        .set('Authorization', `Bearer ${sellerToken}`)
+        .expect(200);
+
+      const res = await request(app)
+        .get(`/api/products/${productId}`)
+        .expect(404);
+
+      expect(res.body.code).toBe('PRODUCT_REMOVED');
     });
 
     it("should broadcast 'product_status' with status 'removed'", async () => {

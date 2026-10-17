@@ -355,6 +355,7 @@ const forceDeleteProduct = async (req, res, next) => {
         metadata: {
           title: product.title,
           seller: product.seller,
+          byRole: 'admin',
           force: true,
           reason: req.body?.reason || '',
         },

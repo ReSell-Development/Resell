@@ -20,6 +20,12 @@ const {
   assessCategoryAgreement,
   assessCrossCategoryImageRepost,
 } = require('../services/fraudDetection');
+const {
+  typedVariantsFromImages,
+  typedHashSetFromAnalysis,
+  hashIndexFromVariants,
+  mergeVariants,
+} = require('../services/duplicatePipeline');
 const { cosineSimilarity } = require('../services/textSimilarity');
 
 (async () => {
@@ -360,7 +366,7 @@ const { cosineSimilarity } = require('../services/textSimilarity');
       // them (data loss on every background run). Merge: keep all existing
       // entries, add the new unique normal + mirror + orientation hashes.
       const stored = await Product.findById(productId)
-        .select('aiAnalysis.imageHashes aiAnalysis.rotationHashes aiAnalysis.vflipHash')
+        .select('aiAnalysis.imageHashes aiAnalysis.rotationHashes aiAnalysis.vflipHash aiAnalysis.hashVariants')
         .lean();
       const newHashes = results.flatMap((r) => [r.hash, r.mirrorHash]).filter(Boolean);
       const mergedHashes = [
@@ -376,6 +382,14 @@ const { cosineSimilarity } = require('../services/textSimilarity');
       const mergedVflips = [
         ...new Set([...(stored?.aiAnalysis?.vflipHash || []), ...newVflips]),
       ];
+      // SCRUM-30: typed variant list + LSH buckets. Merged with whatever was
+      // already stored so the edit path's labelled variants (and previous
+      // orientation coverage) survive a re-analysis.
+      const mergedVariants = mergeVariants(
+        typedHashSetFromAnalysis(stored?.aiAnalysis || {}),
+        typedVariantsFromImages(results)
+      );
+      const mergedBuckets = hashIndexFromVariants(mergedVariants).hashBuckets;
 
       const product = await Product.findByIdAndUpdate(
         productId,
@@ -411,6 +425,8 @@ const { cosineSimilarity } = require('../services/textSimilarity');
             imageHashes: mergedHashes,
             rotationHashes: mergedRotations,
             vflipHash: mergedVflips,
+            hashVariants: mergedVariants,
+            hashBuckets: mergedBuckets,
             priceRecommendation: {
               recommendedPrice: finalSuggestedPrice,
               minPrice: finalPriceRange.min,
@@ -583,6 +599,21 @@ const { cosineSimilarity } = require('../services/textSimilarity');
           fusionMode: fusion.fusionMode,
           assessedAt: new Date(),
         };
+
+        // SCRUM-30: graded duplicate assessment (separate image-copy and
+        // physical-item scores + ALLOW/REVIEW/BLOCK). Persisted beside the
+        // risk assessment. It never changes listing status on its own — a
+        // visual/physical-item match alone is never proof of a duplicate.
+        try {
+          const { assessDuplicate } = require('../services/duplicatePipeline');
+          const assessment = await assessDuplicate({ product });
+          if (assessment) product.aiAnalysis.duplicateAssessment = assessment;
+        } catch (assessmentErr) {
+          console.warn(
+            `[Worker] Duplicate assessment failed for ${productId}:`,
+            assessmentErr.message
+          );
+        }
 
         await product.save();
       } finally {

@@ -22,6 +22,18 @@ const OPTIONAL_WITH_DEFAULTS = {
   ML_SERVICE_URL: 'http://localhost:8000',
   ML_BLEND_WEIGHT: '0.7',
   HASH_SIMILARITY_THRESHOLD: '12',
+  // SCRUM-30 — graded duplicate decisions. `block`/`review` are pHash hamming
+  // distances: at/below block a pair is an image copy (BLOCK), between block
+  // and review it is a REVIEW, beyond review it is ALLOW.
+  DUPLICATE_BLOCK_DISTANCE: '6',
+  DUPLICATE_REVIEW_DISTANCE: '12',
+  DUPLICATE_CROSS_BLOCK_DISTANCE: '8',
+  DUPLICATE_CROSS_REVIEW_DISTANCE: '14',
+  // The same break points on the continuous 0..1 scores the pipeline fuses.
+  IMAGE_COPY_BLOCK_SCORE: '0.90',
+  IMAGE_COPY_REVIEW_SCORE: '0.75',
+  PHYSICAL_ITEM_BLOCK_SCORE: '0.97',
+  PHYSICAL_ITEM_REVIEW_SCORE: '0.90',
   VISUAL_SIMILARITY_MEDIUM_THRESHOLD: '0.90',
   VISUAL_SIMILARITY_STRONG_THRESHOLD: '0.97',
   SAME_SELLER_SIM_THRESHOLD: '0.82',

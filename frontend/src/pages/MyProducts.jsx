@@ -51,10 +51,10 @@ export default function MyProducts() {
     try {
       await productService.delete(id);
       setItems((prev) => prev.filter((p) => p._id !== id));
-      toast.success('Listing deleted');
+      toast.success('Listing removed');
       setDeleteTarget(null);
-    } catch {
-      toast.error('Failed to delete');
+    } catch (err) {
+      toast.error(err?.response?.data?.message || err?.response?.data?.error || 'Failed to remove listing');
     }
   };
 

@@ -15,12 +15,16 @@ const {
   perceptualHashFromBuffer,
   mirrorPerceptualHashFromBuffer,
   orientationHashesFromBuffer,
-  hammingDistance,
 } = require('../services/imageHash');
+const {
+  typedVariantsFromImages,
+  hashIndexFromVariants,
+  evaluateDuplicateGate,
+} = require('../services/duplicatePipeline');
 const computerVision = require('../services/computerVision');
 const SHARED_LIMITS = require('../constants');
 const { calculateRecommendedPrice } = require('../services/priceRecommendation');
-const { detectRisk, collectHashSet, assessCategoryAgreement } = require('../services/fraudDetection');
+const { detectRisk, assessCategoryAgreement } = require('../services/fraudDetection');
 const {
   verifyOwnershipForListing,
   verifyPossession,
@@ -135,6 +139,15 @@ const getProduct = async (req, res, next) => {
 
     if (!product) throw new AppError('Product not found', 404, 'NOT_FOUND');
 
+    // A soft-deleted ('removed') listing is not a real listing any more. It is
+    // surfaced as a 404 so the marketplace and product detail pages render a
+    // friendly "This listing has been removed" state instead of a live page.
+    // The distinct REMOVED code lets the frontend tell it apart from a genuine
+    // "never existed" 404.
+    if (product.status === 'removed') {
+      throw new AppError('This listing has been removed', 404, 'PRODUCT_REMOVED');
+    }
+
     const isOwner =
       req.user && req.user._id.toString() === product.seller._id.toString();
 
@@ -156,16 +169,12 @@ const getProduct = async (req, res, next) => {
   }
 };
 
-// Maximum hamming distance for 64-bit pHash to consider two images as duplicates.
-// Distance 0-8: very likely duplicate (crop/recompress variants).
-// Distance 9-12: possibly similar (captured to be safe).
-// Distance 13+: genuinely different images.
-// Threshold of 12 matches fraudDetection.js HASH_SIMILARITY_THRESHOLD and is
-// validated against real photographs with a margin of 18 points to the next
-// same-category different-product minimum distance (30). Both share the
-// single HASH_SIMILARITY_THRESHOLD env var (defaulted in
-// config/validateEnv.js), consumed via SHARED_LIMITS.DUPLICATE_HASH_THRESHOLD.
-const DUPLICATE_HASH_THRESHOLD = SHARED_LIMITS.DUPLICATE_HASH_THRESHOLD;
+// Duplicate decisions are graded by services/duplicatePipeline.js (SCRUM-30):
+// distance <= DUPLICATE_BLOCK_DISTANCE (default 6) is a near-identical image
+// copy and blocks; the wider DUPLICATE_REVIEW_DISTANCE (default 12, shared with
+// fraudDetection.js HASH_SIMILARITY_THRESHOLD) band is REVIEW — surfaced but
+// deliberately allowed, because visual similarity alone is never proof of a
+// duplicate. Thresholds live in the pipeline module / config/validateEnv.js.
 
 const uploadImages = async (req, res, next) => {
   try {
@@ -188,49 +197,45 @@ const uploadImages = async (req, res, next) => {
       fileHashes.push({ file, hash, mirrorHash, rotationHashes, vflipHash });
     }
 
-    // Phase 2: Check each hash against existing active/sold products.
+    // Phase 2: graded duplicate decision (SCRUM-30).
+    //
+    // Candidates are pulled through the indexed LSH nibble-bucket query (with
+    // an explicit legacy scan for documents written before that index existed)
+    // and the probe's full variant set is matched with transformation-aware
+    // thresholds. This replaces the old bounded brute-force scan, which also
+    // compared SHA-256 fallback digests as if they were perceptual hashes.
+    //
     // The check is deliberately GLOBAL, never scoped by a client-supplied
     // category — the eventual listing's category is chosen later in
     // POST /api/products, so trusting a category field here would let a
     // seller scope the check away from the listing that holds the
-    // original image. Limited to 500 candidates for performance.
+    // original image.
     //
-    // The FULL hash set is probed against every stored entry's full hash
-    // set — stored aiAnalysis.imageHashes is a flat list mixing normal and
-    // mirror entries; rotationHashes/vflipHash hold the orientation
-    // variants. Incoming-normal vs stored-mirror catches flipped re-uploads
-    // of fixed rows; incoming-mirror vs stored-normal catches legacy rows
-    // that never stored mirrors; incoming-rotated vs stored-rotation
-    // catches rotated re-uploads of any row.
-    for (const { hash, mirrorHash, rotationHashes, vflipHash } of fileHashes) {
-      const candidateFilter = {
-        status: { $in: ['active', 'sold'] },
-        'aiAnalysis.imageHashes': { $exists: true, $ne: [] },
-      };
+    // BLOCK (near-identical image copy) rejects the upload outright. REVIEW
+    // (a probable but not conclusive copy) is deliberately allowed through:
+    // visual similarity on its own is never proof of a duplicate, so the
+    // listing carries on to the fraud engine which scores it as a +35 signal.
+    const probeSets = fileHashes.map((fileHash) => typedVariantsFromImages([fileHash]));
+    const { results: gateResults } = await evaluateDuplicateGate({ probeSets });
 
-      const candidates = await Product.find(candidateFilter)
-        .select('title seller aiAnalysis.imageHashes aiAnalysis.rotationHashes aiAnalysis.vflipHash')
-        .limit(500);
+    const review = gateResults.filter((r) => r.decision === 'REVIEW' && r.best);
+    if (review.length > 0) {
+      console.warn(
+        `[duplicate] ${review.length} uploaded image(s) in the REVIEW band (not blocking): ` +
+          review
+            .map((r) => `${r.best.distance}d/${r.best.relationship}`)
+            .join(', ')
+      );
+    }
 
-      const probeSet = [hash, mirrorHash, ...(rotationHashes || []), vflipHash].filter(Boolean);
-      for (const probe of probeSet) {
-        if (!probe) continue;
-        for (const candidate of candidates) {
-          const candidateHashes = collectHashSet(candidate.aiAnalysis);
-          for (const candidateHash of candidateHashes) {
-            const distance = hammingDistance(probe, candidateHash);
-            // null = non-pHash entry (e.g. sha256 fallback) — skip, never compare.
-            if (distance !== null && distance <= DUPLICATE_HASH_THRESHOLD) {
-              const similarityPct = Math.round((1 - distance / 64) * 100);
-              throw new AppError(
-                `Duplicate image detected (~${similarityPct}% similar to existing listing "${candidate.title}"). This image is already used in another listing.`,
-                409,
-                'DUPLICATE_IMAGE'
-              );
-            }
-          }
-        }
-      }
+    const blocked = gateResults.find((r) => r.decision === 'BLOCK' && r.best);
+    if (blocked) {
+      const similarityPct = Math.round((1 - blocked.best.distance / 64) * 100);
+      throw new AppError(
+        `Duplicate image detected (~${similarityPct}% similar to existing listing "${blocked.best.candidateTitle}"). This image is already used in another listing.`,
+        409,
+        'DUPLICATE_IMAGE'
+      );
     }
 
     // Phase 3: All hashes are unique — proceed with Cloudinary upload + CV analysis.
@@ -591,6 +596,11 @@ const createProduct = async (req, res, next) => {
     // Full AI analysis will be done in background job. If the listing itself
     // fails to persist, an identity registered during this request must not
     // be orphaned — it is removed again (best-effort) before rethrowing.
+    // SCRUM-30: typed variant list + LSH buckets for the duplicate pipeline's
+    // indexed candidate retrieval. Computed from the same server-authoritative
+    // hashes that go into the flat imageHashes list.
+    const initialHashIndex = hashIndexFromVariants(typedVariantsFromImages(resolvedImages));
+
     let product;
     try {
       product = await Product.create({
@@ -638,6 +648,8 @@ const createProduct = async (req, res, next) => {
         vflipHash: resolvedImages
           .flatMap((i) => (Array.isArray(i?.vflipHash) ? i.vflipHash : i?.vflipHash ? [i.vflipHash] : []))
           .filter(Boolean),
+        hashVariants: initialHashIndex.hashVariants,
+        hashBuckets: initialHashIndex.hashBuckets,
         hashesUnverified,
         priceRecommendation: {
           recommendedPrice: 0,
@@ -1051,14 +1063,19 @@ const updateProduct = async (req, res, next) => {
         verified.push({ img, hash, mirrorHash, rotationHashes, vflipHash, isNew: !retained });
       }
 
-      // Duplicate detection for NEW images — identical rules to the
-      // upload-time check: active/sold listings, hamming distance
-      // <= DUPLICATE_HASH_THRESHOLD. Both the normal and the mirrored
-      // hash are probed so a flipped copy of an existing image cannot
-      // slip through. The scope covers BOTH the listing's original
-      // category and any new category supplied in this request — a
-      // seller can never scope the check away from the listing that
-      // holds the original image by changing the category mid-edit.
+      // Duplicate detection for NEW images — the same graded rules as the
+      // upload-time check:
+      // SCRUM-30: the same graded pipeline the upload gate uses — indexed
+      // LSH candidate retrieval plus transformation-aware matching. Both the
+      // normal and the mirrored/rotated variants are probed so a flipped copy
+      // of an existing image cannot slip through. The scope covers BOTH the
+      // listing's original category and any new category supplied in this
+      // request — a seller can never scope the check away from the listing
+      // that holds the original image by changing the category mid-edit.
+      //
+      // BLOCK rejects the edit outright (nothing is persisted, so there is no
+      // partial update); REVIEW is allowed through and scored by the fraud
+      // engine instead.
       const requestedCategory = req.body.category !== undefined ? req.body.category : null;
       const scopeCategories = [
         ...new Set(
@@ -1066,40 +1083,24 @@ const updateProduct = async (req, res, next) => {
         ),
       ];
 
-      const candidates = [];
-      for (const scopeCategory of scopeCategories) {
-        const inScope = await Product.find({
-          _id: { $ne: product._id },
-          status: { $in: ['active', 'sold'] },
-          'aiAnalysis.imageHashes': { $exists: true, $ne: [] },
-          category: scopeCategory,
-        })
-          .select('title aiAnalysis.imageHashes aiAnalysis.rotationHashes aiAnalysis.vflipHash')
-          .limit(500);
-        candidates.push(...inScope);
-      }
+      const newProbeSets = verified
+        .filter((v) => v.isNew)
+        .map((v) => typedVariantsFromImages([v]));
+      const { results } = await evaluateDuplicateGate({
+        probeSets: newProbeSets,
+        excludeProductId: product._id,
+        categories: scopeCategories,
+      });
 
-      for (const v of verified) {
-        if (!v.isNew) continue;
-        const probeSet = [v.hash, v.mirrorHash, ...(v.rotationHashes || []), v.vflipHash].filter(Boolean);
-        for (const probe of probeSet) {
-          if (!probe) continue;
-          for (const candidate of candidates) {
-            for (const candidateHash of collectHashSet(candidate.aiAnalysis)) {
-              const distance = hammingDistance(probe, candidateHash);
-              // null = non-pHash entry (e.g. sha256 fallback) — skip, never compare.
-              if (distance !== null && distance <= DUPLICATE_HASH_THRESHOLD) {
-                const similarityPct = Math.round((1 - distance / 64) * 100);
-                throw new AppError(
-                  `Duplicate image detected (~${similarityPct}% similar to existing listing "${candidate.title}"). This image is already used in another listing.`,
-                  409,
-                  'DUPLICATE_IMAGE'
-                );
-              }
-            }
-        }
+      const blockedEdit = results.find((r) => r.decision === 'BLOCK' && r.best);
+      if (blockedEdit) {
+        const similarityPct = Math.round((1 - blockedEdit.best.distance / 64) * 100);
+        throw new AppError(
+          `Duplicate image detected (~${similarityPct}% similar to existing listing "${blockedEdit.best.candidateTitle}"). This image is already used in another listing.`,
+          409,
+          'DUPLICATE_IMAGE'
+        );
       }
-    }
     } catch (err) {
       // Verification failed — nothing was persisted. Clean up the newly
       // uploaded Cloudinary assets that belong to this rejected update.
@@ -1124,6 +1125,11 @@ const updateProduct = async (req, res, next) => {
     product.aiAnalysis.vflipHash = verified
       .flatMap((v) => (v.vflipHash ? [v.vflipHash] : []))
       .filter(Boolean);
+    // SCRUM-30: refresh the typed variant list + LSH buckets so the indexed
+    // candidate retrieval sees the edited image set.
+    const updatedHashIndex = hashIndexFromVariants(typedVariantsFromImages(verified));
+    product.aiAnalysis.hashVariants = updatedHashIndex.hashVariants;
+    product.aiAnalysis.hashBuckets = updatedHashIndex.hashBuckets;
     product.aiAnalysis.lastAnalyzedAt = new Date();
 
     await product.save();
@@ -1184,13 +1190,21 @@ const deleteProduct = async (req, res, next) => {
     const product = await Product.findById(req.params.id);
     if (!product) throw new AppError('Product not found', 404, 'NOT_FOUND');
 
-    if (product.seller.toString() !== req.user._id.toString()) {
+    // An admin may force-remove ANY listing (bypassing the ownership check and
+    // the sold/in-flight-order guard) by passing ?force=true. Without that
+    // explicit flag the owner-facing route stays owner-only — admins who are
+    // not the owner are routed to DELETE /api/admin/products/:id instead.
+    const isAdmin = req.user.role === 'admin';
+    const force = isAdmin && (req.query.force === 'true' || req.query.force === '1');
+
+    if (!force && product.seller.toString() !== req.user._id.toString()) {
       throw new AppError('Not authorized to delete this listing', 403, 'FORBIDDEN');
     }
 
-    // A seller cannot make an in-flight checkout disappear. Admin deletion is
-    // deliberately handled by the admin route, not this owner-facing flow.
-    if (product.status === 'sold') {
+    // A seller cannot make an in-flight checkout disappear. Admin force-delete
+    // (?force=true) deliberately bypasses this guard; the dedicated admin route
+    // always bypasses it.
+    if (!force && product.status === 'sold') {
       const incompleteOrder = await Sale.exists({
         product: product._id,
         status: { $nin: ['completed', 'cancelled', 'refunded', 'payment_failed'] },
@@ -1218,7 +1232,12 @@ const deleteProduct = async (req, res, next) => {
         action: 'product_deleted',
         targetType: 'product',
         target: product._id,
-        metadata: { title: product.title, seller: product.seller },
+        metadata: {
+          title: product.title,
+          seller: product.seller,
+          byRole: force ? 'admin' : 'seller',
+          ...(force ? { force: true, reason: req.body?.reason || '' } : {}),
+        },
         ipAddress: req.ip || '',
         userAgent: req.get('user-agent') || '',
       }),

@@ -87,6 +87,7 @@ export const adminService = {
   deleteUser: (id) => api.delete(`/admin/users/${id}`),
   products: (params) => api.get('/admin/products', { params }),
   moderateProduct: (id, data) => api.put(`/admin/products/${id}`, data),
+  deleteProduct: (id, reason) => api.delete(`/admin/products/${id}`, { data: { reason } }),
 };
 
 export const notificationService = {

@@ -123,6 +123,8 @@ describe('Admin Routes', () => {
       const audit = await AuditLog.findOne({ action: 'product_deleted', target: product._id });
       expect(audit).not.toBeNull();
       expect(audit.metadata.force).toBe(true);
+      expect(audit.metadata.byRole).toBe('admin');
+      expect(audit.metadata.reason).toBe('test moderation removal');
     });
 
     it('rejects non-admin (403) and unknown ids (404)', async () => {

@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Search, SlidersHorizontal, X, ChevronLeft, ChevronRight } from 'lucide-react';
 import { productService, categoryService } from '../services/services';
+import { useSocket } from '../contexts/SocketContext';
 import { useCurrency } from '../contexts/CurrencyContext';
 import { convertPrice } from '../utils/currency';
 import ProductCard from '../components/product/ProductCard';
@@ -71,6 +72,20 @@ export default function Marketplace() {
     page: 1,
   });
   const [pagination, setPagination] = useState({ page: 1, pages: 1, total: 0 });
+  const { on, off } = useSocket();
+
+  // Live removal: when a listing is deleted the backend broadcasts
+  // 'product_status' with status 'removed'. Drop the card in place so an open
+  // marketplace grid reflects the removal without a manual refresh.
+  useEffect(() => {
+    if (!on) return undefined;
+    const handleStatus = (payload) => {
+      if (!payload || payload.status !== 'removed') return;
+      setProducts((prev) => prev.filter((p) => p._id !== payload.productId));
+    };
+    on('product_status', handleStatus);
+    return () => off('product_status', handleStatus);
+  }, [on, off]);
 
   useEffect(() => {
     categoryService.list().then((r) => setCategories(r.data.categories)).catch(() => {});

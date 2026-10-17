@@ -1,6 +1,6 @@
 import { useEffect, useState, Fragment } from 'react';
 import { motion } from 'framer-motion';
-import { Search, Eye, Flag, CheckCircle, XCircle, AlertTriangle, ShieldCheck, ShieldAlert, Sparkles } from 'lucide-react';
+import { Search, Eye, Flag, CheckCircle, XCircle, AlertTriangle, ShieldCheck, ShieldAlert, Sparkles, Trash2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { adminService } from '../services/services';
@@ -18,6 +18,9 @@ export default function AdminProducts() {
   const [statusFilter, setStatusFilter] = useState('');
   const [flagFilter, setFlagFilter] = useState('');
   const [expandedId, setExpandedId] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleteReason, setDeleteReason] = useState('');
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     load();
@@ -77,6 +80,22 @@ export default function AdminProducts() {
       toast.success(isFlagged ? 'Listing flagged' : 'Flag removed');
     } catch {
       toast.error('Failed to update');
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await adminService.deleteProduct(deleteTarget._id, deleteReason);
+      toast.success('Listing removed');
+      setDeleteTarget(null);
+      setDeleteReason('');
+      await load();
+    } catch {
+      toast.error('Failed to remove listing');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -265,6 +284,16 @@ export default function AdminProducts() {
                         >
                           <Flag className="w-4 h-4" />
                         </button>
+                        <button
+                          onClick={() => {
+                            setDeleteTarget(p);
+                            setDeleteReason('');
+                          }}
+                          title="Delete Listing"
+                          className="inline-flex p-1.5 rounded hover:bg-red-50 dark:hover:bg-red-950/40 text-red-600"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -322,6 +351,54 @@ export default function AdminProducts() {
           </div>
         )}
       </div>
+
+      {deleteTarget && (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-black/50 backdrop-blur-sm p-4"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="card w-full max-w-md p-6">
+            <h3 className="font-display text-xl font-bold">Remove listing?</h3>
+            <p className="mt-2 text-sm text-slate-500">
+              Remove this listing permanently? This cannot be undone.
+            </p>
+            <p className="mt-1 text-xs text-slate-400">
+              {deleteTarget.title} · {deleteTarget.seller?.name || 'Unknown seller'}
+            </p>
+            <label className="mt-4 block text-xs font-medium text-slate-500" htmlFor="delete-reason">
+              Reason (optional, stored for audit)
+            </label>
+            <textarea
+              id="delete-reason"
+              value={deleteReason}
+              onChange={(e) => setDeleteReason(e.target.value)}
+              rows={3}
+              maxLength={1000}
+              placeholder="e.g. Prohibited item, counterfeit, policy violation…"
+              className="input mt-1"
+            />
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setDeleteTarget(null)}
+                className="btn"
+                disabled={deleting}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleDelete}
+                disabled={deleting}
+                className="btn bg-red-600 text-white hover:bg-red-700"
+              >
+                {deleting ? 'Removing…' : 'Remove listing'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </AdminLayout>
   );
 }
